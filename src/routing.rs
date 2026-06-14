@@ -330,6 +330,7 @@ mod tests {
                 sys(3, "C", SecClass::Highsec),
             ],
             gate_pairs: vec![(1, 2), (2, 3)],
+            hulls: Default::default(),
         };
         build_graph_data(raw, 0)
     }
@@ -367,6 +368,7 @@ mod tests {
                 sys(3, "C", SecClass::Highsec),
             ],
             gate_pairs: vec![(1, 2)],
+            hulls: Default::default(),
         };
         let gd = build_graph_data(raw, 0);
         let ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::Shortest);
@@ -387,6 +389,7 @@ mod tests {
                 sys(4, "D", SecClass::Highsec),
             ],
             gate_pairs: vec![(1, 2), (2, 3), (3, 4), (1, 4)],
+            hulls: Default::default(),
         };
         let gd = build_graph_data(raw, 0);
         let ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::Shortest);
@@ -419,6 +422,7 @@ mod tests {
                 sys(4, "D", SecClass::Highsec),
             ],
             gate_pairs: vec![(1, 2), (2, 4), (1, 3), (3, 4)],
+            hulls: Default::default(),
         };
         let gd = build_graph_data(raw, 0);
         let b = gd.id_to_idx[&2];
@@ -455,6 +459,7 @@ mod tests {
                 sys(4, "D", SecClass::Highsec),
             ],
             gate_pairs: vec![(1, 2), (2, 4), (1, 3), (3, 4)],
+            hulls: Default::default(),
         };
         build_graph_data(raw, 0)
     }
@@ -490,6 +495,7 @@ mod tests {
                 sys(3, "C", SecClass::Highsec),
             ],
             gate_pairs: vec![(1, 2), (2, 3)],
+            hulls: Default::default(),
         };
         let gd = build_graph_data(raw, 0);
         let ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::Safest);
@@ -509,6 +515,7 @@ mod tests {
                 sys(4, "D", SecClass::Highsec),
             ],
             gate_pairs: vec![(1, 2), (2, 4), (1, 3), (3, 4)],
+            hulls: Default::default(),
         };
         let gd = build_graph_data(raw, 0);
         let (wh, c) = (gd.id_to_idx[&2], gd.id_to_idx[&3]);
@@ -532,6 +539,7 @@ mod tests {
                 sys(4, "D", SecClass::Highsec),
             ],
             gate_pairs: vec![(1, 2), (3, 4)],
+            hulls: Default::default(),
         };
         let gd = build_graph_data(raw, 0);
         let mut ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::Shortest);
@@ -554,6 +562,7 @@ mod tests {
                 sys(4, "D", SecClass::Highsec),
             ],
             gate_pairs: vec![(1, 2), (3, 4)],
+            hulls: Default::default(),
         };
         let gd = build_graph_data(raw, 0);
         let c = gd.id_to_idx[&3];
@@ -611,6 +620,7 @@ mod tests {
             RawSdeData {
                 systems,
                 gate_pairs,
+                hulls: Default::default(),
             },
             0,
         )

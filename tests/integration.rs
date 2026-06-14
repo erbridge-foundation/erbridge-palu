@@ -321,6 +321,38 @@ async fn thera_reachable_as_dest_without_include_flag() {
     );
 }
 
+// ── hull catalog ──────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn catalog_loads_blops_and_resolves_known_hull() {
+    use erbridge_geodesic::model::HullCatalog;
+
+    // Build the catalog from the fixture the same way the app does.
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sde");
+    let cache = SdeCache::new(dir);
+    let meta = cache.current_metadata().expect("fixture metadata present");
+    let raw = cache.load_build(meta.build_number).expect("fixture loads");
+    let catalog = HullCatalog::from_raw(raw.hulls);
+
+    // Black Ops (group 898) min base range sits in a sane band (~4 LY) — a loose
+    // guard against parsing the wrong attribute, deliberately not pinned exact.
+    let blops_min = catalog
+        .min_base_ly_for_group(898)
+        .expect("fixture contains Black Ops hulls");
+    assert!(
+        (3.0..=5.0).contains(&blops_min),
+        "Black Ops min base range {blops_min} LY outside sane band"
+    );
+
+    // A known Black Ops hull resolves by name (case-insensitive) and by typeID.
+    let sin = catalog.by_name("sin").expect("Sin in catalog");
+    assert_eq!(sin.group_id, 898);
+    assert_eq!(catalog.by_type_id(22430), Some(sin));
+
+    // The JDC per-level bonus was read from the SDE (attribute 870 = 20%).
+    assert!((catalog.bonus_per_level() - 0.20).abs() < 1e-9);
+}
+
 // ── health + openapi ──────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -343,6 +375,8 @@ async fn health_reports_graph_summary_without_auth() {
     assert!(body["sde_version"].as_u64().unwrap() > 0);
     assert!(body["systems"].as_u64().unwrap() > 0);
     assert!(body["edges"].as_u64().unwrap() > 0);
+    // The hull catalog loaded from the fixture's type files.
+    assert!(body["hull_count"].as_u64().unwrap() > 0);
     // Freshness fields are null/0 before any reload swap or EVE-Scout fetch.
     assert!(body["last_sde_reload_at"].is_null());
     assert_eq!(body["sig_count"], 0);

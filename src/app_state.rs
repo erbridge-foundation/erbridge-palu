@@ -47,6 +47,7 @@ mod tests {
             RawSdeData {
                 systems: vec![],
                 gate_pairs: vec![],
+                hulls: Default::default(),
             },
             build,
         ))

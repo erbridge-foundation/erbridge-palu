@@ -5,7 +5,7 @@ use petgraph::graph::{NodeIndex, UnGraph};
 use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::warn;
 
-use crate::model::{GraphData, RawSdeData};
+use crate::model::{GraphData, HullCatalog, RawSdeData};
 
 /// Build the in-memory `GraphData`. Wormhole systems carry coordinates too,
 /// but the kd-tree indexes only K-space systems (the reserved blops query
@@ -65,12 +65,18 @@ pub fn build_graph_data(raw: RawSdeData, build_number: u64) -> GraphData {
         }
     }
 
+    // Build the hull catalog from the same raw SDE build. Folding it into
+    // GraphData means it rides the same ArcSwap as the map graph — a live
+    // snapshot's systems and hulls always come from one build (no skew).
+    let hulls = HullCatalog::from_raw(raw.hulls);
+
     GraphData {
         systems: raw.systems,
         id_to_idx,
         name_to_idx,
         gate_graph,
         spatial_index,
+        hulls,
         build_number,
     }
 }
@@ -129,6 +135,7 @@ mod tests {
                 ),
             ],
             gate_pairs: vec![(30000142, 30000144), (30000139, 30000144)],
+            hulls: Default::default(),
         }
     }
 
@@ -183,6 +190,7 @@ mod tests {
                 (30000142, 30000144),
                 (30000144, 30000142),
             ],
+            hulls: Default::default(),
         };
         let gd = build_graph_data(raw, 0);
         assert_eq!(gd.gate_graph.edge_count(), 1);
@@ -220,6 +228,7 @@ mod tests {
                 10000002,
             )],
             gate_pairs: vec![(30000142, 99999999)],
+            hulls: Default::default(),
         };
         let gd = build_graph_data(raw, 0);
         assert_eq!(gd.gate_graph.node_count(), 1);
@@ -234,6 +243,7 @@ mod tests {
                 make_system(31000001, "J100001", -0.99, [1.0, 0.0, 0.0], 11000001),
             ],
             gate_pairs: vec![],
+            hulls: Default::default(),
         };
         let gd = build_graph_data(raw, 0);
         let jita = gd.id_to_idx[&30000142];
@@ -250,5 +260,34 @@ mod tests {
     fn build_number_preserved() {
         let gd = build_graph_data(fixture(), 42);
         assert_eq!(gd.build_number, 42);
+    }
+
+    #[test]
+    fn hull_catalog_rides_into_graph_data() {
+        use crate::model::{RawHull, RawHullCatalog};
+        let raw = RawSdeData {
+            systems: vec![make_system(
+                30000142,
+                "Jita",
+                0.945,
+                [0.0, 0.0, 0.0],
+                10000002,
+            )],
+            gate_pairs: vec![],
+            hulls: RawHullCatalog {
+                hulls: vec![RawHull {
+                    type_id: 22430,
+                    name: "Sin".into(),
+                    group_id: 898,
+                    base_ly: 4.0,
+                }],
+                jdc_bonus_per_level: Some(0.20),
+            },
+        };
+        let gd = build_graph_data(raw, 0);
+        // The catalog is built from the same raw build and carried on GraphData.
+        assert_eq!(gd.hulls.len(), 1);
+        assert_eq!(gd.hulls.by_name("sin").unwrap().base_ly, 4.0);
+        assert_eq!(gd.hulls.bonus_per_level(), 0.20);
     }
 }

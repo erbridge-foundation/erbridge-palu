@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use super::parse::{ParseError, parse_gate_pairs, parse_systems};
+use super::parse::{ParseError, parse_gate_pairs, parse_hull_catalog, parse_systems};
 use crate::model::RawSdeData;
 
 const LATEST_URL: &str = "https://developers.eveonline.com/static-data/tranquility/latest.jsonl";
@@ -24,7 +24,16 @@ fn zip_url(build: u64) -> String {
 
 /// Only the files we deserialize. Add more here (and matching types in
 /// `types.rs`) if a future change needs region/constellation lookup.
-const FILES: &[&str] = &["mapSolarSystems.jsonl", "mapStargates.jsonl"];
+///
+/// `types.jsonl` and `typeDogma.jsonl` feed the hull catalog. `types.jsonl` is
+/// ~150 MB (every item in EVE); it is stream-filtered during parse and never
+/// materialised in full — see `parse::parse_hull_catalog`.
+const FILES: &[&str] = &[
+    "mapSolarSystems.jsonl",
+    "mapStargates.jsonl",
+    "types.jsonl",
+    "typeDogma.jsonl",
+];
 
 /// CCP's `latest.jsonl` manifest entry.
 #[derive(Debug, Clone, Deserialize)]
@@ -99,9 +108,11 @@ impl SdeCache {
         }
         let systems = parse_file(&dir, "mapSolarSystems.jsonl", parse_systems)?;
         let gate_pairs = parse_file(&dir, "mapStargates.jsonl", parse_gate_pairs)?;
+        let hulls = load_hull_catalog(&dir)?;
         Ok(RawSdeData {
             systems,
             gate_pairs,
+            hulls,
         })
     }
 
@@ -141,6 +152,18 @@ where
     let path = dir.join(name);
     let file = std::fs::File::open(&path).with_context(|| format!("opening cached {name}"))?;
     f(BufReader::new(file)).with_context(|| format!("parsing {name}"))
+}
+
+/// Build the raw hull catalog by stream-parsing `types.jsonl` and joining
+/// `typeDogma.jsonl`. Both readers are opened here (rather than via `parse_file`)
+/// because the parser needs both files together to perform the join.
+fn load_hull_catalog(dir: &Path) -> Result<crate::model::RawHullCatalog> {
+    let types_path = dir.join("types.jsonl");
+    let dogma_path = dir.join("typeDogma.jsonl");
+    let types = std::fs::File::open(&types_path).context("opening cached types.jsonl")?;
+    let dogma = std::fs::File::open(&dogma_path).context("opening cached typeDogma.jsonl")?;
+    parse_hull_catalog(BufReader::new(types), BufReader::new(dogma))
+        .context("parsing types.jsonl/typeDogma.jsonl")
 }
 
 /// Resolve the cache directory: `GEODESIC_CACHE_DIR` override → platform cache.
@@ -308,6 +331,7 @@ pub fn load_from_dir(dir: &Path) -> Result<(RawSdeData, CacheMetadata)> {
     }
     let systems = parse_file(dir, "mapSolarSystems.jsonl", parse_systems)?;
     let gate_pairs = parse_file(dir, "mapStargates.jsonl", parse_gate_pairs)?;
+    let hulls = load_hull_catalog(dir)?;
     let meta = CacheMetadata {
         build_number: 0,
         release_date: None,
@@ -317,6 +341,7 @@ pub fn load_from_dir(dir: &Path) -> Result<(RawSdeData, CacheMetadata)> {
         RawSdeData {
             systems,
             gate_pairs,
+            hulls,
         },
         meta,
     ))
@@ -413,19 +438,39 @@ mod tests {
         zip.finish().unwrap().into_inner()
     }
 
-    #[test]
-    fn load_from_dir_reads_jsonl_directly() {
-        let dir = tempfile::tempdir().unwrap();
+    /// Write a minimal but complete four-file build into `dir`: one system, no
+    /// gates, one published jump hull (attr 867 = 4.0) plus the JDC skill (attr
+    /// 870 = 20.0). Used by the offline-load tests.
+    fn write_minimal_build(dir: &Path) {
         std::fs::write(
-            dir.path().join("mapSolarSystems.jsonl"),
+            dir.join("mapSolarSystems.jsonl"),
             "{\"_key\":30000142,\"name\":{\"en\":\"Jita\"},\"securityStatus\":0.95,\"regionID\":10000002,\"constellationID\":1,\"position\":{\"x\":0,\"y\":0,\"z\":0}}\n",
         )
         .unwrap();
-        std::fs::write(dir.path().join("mapStargates.jsonl"), "").unwrap();
+        std::fs::write(dir.join("mapStargates.jsonl"), "").unwrap();
+        std::fs::write(
+            dir.join("types.jsonl"),
+            "{\"_key\":22430,\"groupID\":898,\"name\":{\"en\":\"Sin\"},\"published\":true}\n{\"_key\":21611,\"groupID\":257,\"name\":{\"en\":\"Jump Drive Calibration\"},\"published\":true}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("typeDogma.jsonl"),
+            "{\"_key\":22430,\"dogmaAttributes\":[{\"attributeID\":867,\"value\":4.0}]}\n{\"_key\":21611,\"dogmaAttributes\":[{\"attributeID\":870,\"value\":20.0}]}\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn load_from_dir_reads_jsonl_directly() {
+        let dir = tempfile::tempdir().unwrap();
+        write_minimal_build(dir.path());
         let (raw, meta) = load_from_dir(dir.path()).unwrap();
         assert_eq!(raw.systems.len(), 1);
         assert_eq!(raw.systems[0].name, "Jita");
         assert_eq!(meta.build_number, 0);
+        // The two type files are parsed and joined into the hull catalog.
+        assert_eq!(raw.hulls.hulls.len(), 1);
+        assert_eq!(raw.hulls.hulls[0].name, "Sin");
     }
 
     #[test]
@@ -438,11 +483,50 @@ mod tests {
     }
 
     #[test]
+    fn load_from_dir_errors_when_type_file_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mapSolarSystems.jsonl"), "").unwrap();
+        std::fs::write(dir.path().join("mapStargates.jsonl"), "").unwrap();
+        std::fs::write(dir.path().join("types.jsonl"), "").unwrap();
+        // typeDogma.jsonl absent — the four-file build is incomplete.
+        let err = load_from_dir(dir.path()).unwrap_err();
+        assert!(err.to_string().contains("missing typeDogma.jsonl"));
+    }
+
+    #[test]
+    fn load_build_treats_missing_type_files_as_incomplete() {
+        // A cached build with only the two map files is incomplete now that the
+        // type files are required: it must be rejected, not loaded partially.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SdeCache::new(dir.path().to_path_buf());
+        let build = 12345;
+        let build_dir = cache.build_dir(build);
+        std::fs::create_dir_all(&build_dir).unwrap();
+        std::fs::write(build_dir.join("mapSolarSystems.jsonl"), b"").unwrap();
+        std::fs::write(build_dir.join("mapStargates.jsonl"), b"").unwrap();
+        // types.jsonl / typeDogma.jsonl absent.
+        assert!(!cache.build_files_present(build));
+        let err = cache.load_build(build).unwrap_err();
+        assert!(err.to_string().contains("incomplete"));
+        // And metadata pointing at it is treated as absent (re-fetched).
+        cache
+            .write_metadata(&CacheMetadata {
+                build_number: build,
+                release_date: None,
+                fetched_at: Utc::now(),
+            })
+            .unwrap();
+        assert!(cache.current_metadata().is_none());
+    }
+
+    #[test]
     fn extract_files_writes_required_files_atomically() {
         let dir = tempfile::tempdir().unwrap();
         let zip_bytes = make_zip_with_files(&[
             ("mapSolarSystems.jsonl", b"{}\n"),
             ("mapStargates.jsonl", b""),
+            ("types.jsonl", b""),
+            ("typeDogma.jsonl", b""),
             ("mapRegions.jsonl", b""),
             ("ignored_extra.jsonl", b"junk"),
         ]);
@@ -468,6 +552,8 @@ mod tests {
         let zip_bytes = make_zip_with_files_raw(&[
             ("mapSolarSystems.jsonl", b"{}"),
             ("mapStargates.jsonl", b""),
+            ("types.jsonl", b""),
+            ("typeDogma.jsonl", b""),
             ("../escape.jsonl", b"pwned"),
             ("/abs/escape.jsonl", b"pwned"),
             ("nested/../../escape.jsonl", b"pwned"),

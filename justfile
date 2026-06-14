@@ -36,6 +36,14 @@ test:
 hurl port="5099":
     tests/hurl/run-hurl.sh {{port}}
 
+# ─── fixtures ────────────────────────────────────────────────────────────────
+
+# Regenerate the committed SDE test fixture from the latest CCP build (maps
+# verbatim, type files trimmed to jump-capable hulls + the JDC skill). Whole
+# fixture rebuilt at one build number so map and hull data never skew.
+update-fixtures:
+    tests/fixtures/update-sde-fixtures.sh
+
 # ─── run ─────────────────────────────────────────────────────────────────────
 
 # Run the service (downloads the live SDE on first start)

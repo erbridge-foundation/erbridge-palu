@@ -2,12 +2,15 @@
 
 use std::io::BufRead;
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use thiserror::Error;
 
-use crate::model::{SecClass, System};
+use crate::model::{RawHull, RawHullCatalog, SecClass, System};
 
-use super::types::{RawStargate, RawSystem};
+use super::types::{
+    ATTR_JUMP_DRIVE_RANGE, ATTR_JUMP_DRIVE_RANGE_BONUS, JDC_SKILL_TYPE_ID, RawStargate, RawSystem,
+    RawType, RawTypeDogma,
+};
 
 #[derive(Debug, Error)]
 pub enum ParseError {
@@ -68,6 +71,82 @@ pub fn parse_gate_pairs(reader: impl BufRead) -> Result<Vec<(i64, i64)>, ParseEr
         }
     }
     Ok(pairs)
+}
+
+/// Build the hull catalog by streaming `types.jsonl` then `typeDogma.jsonl`.
+///
+/// `types.jsonl` is ~150 MB (every item in EVE); we **never materialise it**.
+/// Pass 1 streams it line by line, retaining only the lean metadata
+/// (`name`, `groupID`) of **published** types, keyed by typeID. Pass 2 streams
+/// `typeDogma.jsonl`, and for each row reads attribute 867 (range) when the type
+/// was retained, plus attribute 870 from the JDC skill row. A hull enters the
+/// catalog only if it has both a retained published `types` row **and** a 867
+/// value — i.e. it is genuinely jump-capable.
+pub fn parse_hull_catalog(
+    types_reader: impl BufRead,
+    dogma_reader: impl BufRead,
+) -> Result<RawHullCatalog, ParseError> {
+    // Pass 1: published types only → (name, group_id) by typeID. Holds ~tens of
+    // thousands of lean entries at most, not the 150 MB source.
+    let mut published: FxHashMap<i64, (String, i64)> = FxHashMap::default();
+    for (i, line) in types_reader.lines().enumerate() {
+        let line = line?;
+        let line = strip_bom(line.trim());
+        if line.is_empty() {
+            continue;
+        }
+        let raw: RawType = serde_json::from_str(line).map_err(|e| ParseError::Json {
+            line: i + 1,
+            source: e,
+        })?;
+        if raw.published {
+            published.insert(raw.id, (raw.name.en, raw.group_id));
+        }
+    }
+
+    // Pass 2: read 867 for retained types and 870 from the JDC skill row.
+    let mut hulls = Vec::new();
+    let mut jdc_bonus_per_level: Option<f64> = None;
+    for (i, line) in dogma_reader.lines().enumerate() {
+        let line = line?;
+        let line = strip_bom(line.trim());
+        if line.is_empty() {
+            continue;
+        }
+        let raw: RawTypeDogma = serde_json::from_str(line).map_err(|e| ParseError::Json {
+            line: i + 1,
+            source: e,
+        })?;
+
+        if raw.id == JDC_SKILL_TYPE_ID
+            && let Some(attr) = raw
+                .dogma_attributes
+                .iter()
+                .find(|a| a.attribute_id == ATTR_JUMP_DRIVE_RANGE_BONUS)
+        {
+            // SDE stores the bonus as a percent (20.0); store as a fraction.
+            jdc_bonus_per_level = Some(attr.value / 100.0);
+        }
+
+        if let Some((name, group_id)) = published.get(&raw.id)
+            && let Some(attr) = raw
+                .dogma_attributes
+                .iter()
+                .find(|a| a.attribute_id == ATTR_JUMP_DRIVE_RANGE)
+        {
+            hulls.push(RawHull {
+                type_id: raw.id,
+                name: name.clone(),
+                group_id: *group_id,
+                base_ly: attr.value,
+            });
+        }
+    }
+
+    Ok(RawHullCatalog {
+        hulls,
+        jdc_bonus_per_level,
+    })
 }
 
 fn system_from_raw(raw: RawSystem) -> System {
@@ -169,6 +248,43 @@ mod tests {
             ParseError::Json { line, .. } => assert_eq!(line, 2),
             other => panic!("expected Json error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_hull_catalog_joins_and_filters() {
+        // A published jump hull (867 present) → kept. A published hull with 868
+        // but no 867 → excluded (868 is fuel, not range). An unpublished hull
+        // with 867 → excluded. The JDC skill row's 870 → read as the bonus.
+        let types = r#"{"_key": 22430, "groupID": 898, "name": {"en": "Sin"}, "published": true}
+{"_key": 670, "groupID": 30, "name": {"en": "Capsule"}, "published": true}
+{"_key": 99999, "groupID": 898, "name": {"en": "Unpublished Blops"}, "published": false}
+{"_key": 21611, "groupID": 257, "name": {"en": "Jump Drive Calibration"}, "published": true}
+"#;
+        let dogma = r#"{"_key": 22430, "dogmaAttributes": [{"attributeID": 867, "value": 4.0}, {"attributeID": 868, "value": 1000.0}]}
+{"_key": 670, "dogmaAttributes": [{"attributeID": 868, "value": 5.0}]}
+{"_key": 99999, "dogmaAttributes": [{"attributeID": 867, "value": 4.0}]}
+{"_key": 21611, "dogmaAttributes": [{"attributeID": 870, "value": 20.0}]}
+"#;
+        let cat = parse_hull_catalog(types.as_bytes(), dogma.as_bytes()).unwrap();
+        assert_eq!(cat.hulls.len(), 1, "only the published 867-bearing hull");
+        let sin = &cat.hulls[0];
+        assert_eq!(sin.type_id, 22430);
+        assert_eq!(sin.name, "Sin");
+        assert_eq!(sin.group_id, 898);
+        assert_eq!(sin.base_ly, 4.0, "base range from 867, not 868");
+        // JDC 870 (20.0 percent) is stored as the 0.20 per-level fraction.
+        assert_eq!(cat.jdc_bonus_per_level, Some(0.20));
+    }
+
+    #[test]
+    fn parse_hull_catalog_handles_missing_jdc_row() {
+        let types = r#"{"_key": 22430, "groupID": 898, "name": {"en": "Sin"}, "published": true}
+"#;
+        let dogma = r#"{"_key": 22430, "dogmaAttributes": [{"attributeID": 867, "value": 4.0}]}
+"#;
+        let cat = parse_hull_catalog(types.as_bytes(), dogma.as_bytes()).unwrap();
+        assert_eq!(cat.hulls.len(), 1);
+        assert!(cat.jdc_bonus_per_level.is_none());
     }
 
     #[test]

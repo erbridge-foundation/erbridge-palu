@@ -119,6 +119,9 @@ pub struct HealthResponse {
     pub sde_version: u64,
     pub systems: usize,
     pub edges: usize,
+    /// Number of jump-capable hulls in the loaded catalog (non-zero once the
+    /// SDE type files are loaded). Confirms the catalog is populated.
+    pub hull_count: usize,
     /// RFC3339 timestamp of the last successful SDE hot-reload swap; `null`
     /// until the first real swap.
     pub last_sde_reload_at: Option<chrono::DateTime<chrono::Utc>>,

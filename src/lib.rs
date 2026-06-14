@@ -15,6 +15,7 @@ pub mod eve_scout;
 pub mod graph;
 pub mod handlers;
 pub mod model;
+pub mod range;
 pub mod routing;
 pub mod sde;
 pub mod services;
@@ -84,6 +85,7 @@ mod tests {
             RawSdeData {
                 systems: vec![],
                 gate_pairs: vec![],
+                hulls: Default::default(),
             },
             1,
         ));

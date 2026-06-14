@@ -204,6 +204,7 @@ mod tests {
                 sys(30000142, "Jita", SecClass::Highsec),
             ],
             gate_pairs: vec![(1, ZARZAKH_SYSTEM_ID), (ZARZAKH_SYSTEM_ID, 2)],
+            hulls: Default::default(),
         };
         build_graph_data(raw, 1)
     }
@@ -398,6 +399,7 @@ mod tests {
                 sys(2, "H", SecClass::Nullsec),
             ],
             gate_pairs: vec![(1, ZARZAKH_SYSTEM_ID), (ZARZAKH_SYSTEM_ID, 2)],
+            hulls: Default::default(),
         };
         let gd = build_graph_data(raw, 1);
         let scout = EveScoutSnapshot {
@@ -422,6 +424,7 @@ mod tests {
                 sys(1, "G", SecClass::Nullsec),
             ],
             gate_pairs: vec![],
+            hulls: Default::default(),
         };
         let gd = build_graph_data(raw, 1);
         let expired = Signature {
@@ -452,6 +455,7 @@ mod tests {
                 sys(2, "H", SecClass::Nullsec),
             ],
             gate_pairs: vec![(1, 2)], // G—H gate; Thera/Turnur reachable only via sigs here
+            hulls: Default::default(),
         };
         let gd = build_graph_data(raw, 1);
         let scout = EveScoutSnapshot {
