@@ -1,0 +1,137 @@
+name: backend
+
+on:
+  # On push to develop, main, or a v* tag: run the check, then publish the
+  # image. No paths filter — a release tag should publish even if its only
+  # change was a version bump.
+  push:
+    branches: [develop, main]
+    tags: ["v*"]
+  # On PR: only run the check (no publish).
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt + clippy + test + hurl
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt, clippy
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --all-targets
+
+      - name: Install hurl
+        run: |
+          curl -fsSL -o hurl.deb \
+            https://github.com/Orange-OpenSource/hurl/releases/download/8.0.1/hurl_8.0.1_amd64.deb
+          sudo dpkg -i hurl.deb
+
+      - name: HURL contract suite (offline fixture)
+        run: tests/hurl/run-hurl.sh
+
+  publish:
+    name: build + push geodesic image
+    runs-on: ubuntu-latest
+    needs: check
+    # Publish only for the develop branch (-> :develop, staging) and v* tags
+    # (-> :vX.Y.Z + :latest, production). main is the branch releases are cut
+    # FROM and is never run as its own environment, so a main push is check-only.
+    # PRs never publish.
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/v'))
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      # fetch-depth: 0 fetches full history + tags so `git describe --tags`
+      # resolves a tag-relative version in the version step below.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Compute the git-tag-derived version + short commit ONCE, outside the
+      # image (the Docker build context has no .git/), and pass them in as build
+      # args.
+      - name: Compute version + commit
+        id: version
+        run: |
+          sha="$(git rev-parse --short HEAD)"
+          described="$(git describe --tags --always --dirty)"
+          if git describe --tags --abbrev=0 >/dev/null 2>&1; then
+            # A v* tag exists in history: strip the leading "v".
+            version="${described#v}"
+          else
+            # Zero-tag bootstrap: `git describe` returns a bare SHA, not semver.
+            version="0.0.0-dev.${sha}"
+          fi
+          echo "app_version=${version}" >> "$GITHUB_OUTPUT"
+          echo "git_commit_sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Computed APP_VERSION=${version} GIT_COMMIT_SHA=${sha}"
+
+      - name: Extract image tags + labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/geodesic
+          # The publish gate only lets develop branch + v* tag pushes reach
+          # here: :develop on the develop push; :v<x.y.z> + :latest on a tag
+          # push; :sha-<short> always.
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      # Release immutability: on a v* tag push only, refuse to clobber an
+      # already-published :v<semver> image. Mutable :develop / :sha- tags are
+      # exempt (this step does not run for them).
+      - name: Refuse to overwrite an existing release image
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          image="ghcr.io/${{ github.repository_owner }}/geodesic:${{ github.ref_name }}"
+          if docker manifest inspect "$image" >/dev/null 2>&1; then
+            echo "::error::${image} is already published. Release versions are immutable — cut a new v<semver> tag."
+            exit 1
+          fi
+          echo "${image} does not exist yet — OK to publish."
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.app_version }}
+            GIT_COMMIT_SHA=${{ steps.version.outputs.git_commit_sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

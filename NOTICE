@@ -1,0 +1,17 @@
+ER Bridge
+Copyright (C) 2026 Craig Jarvis
+
+This project is licensed under the GNU Affero General Public License v3.0.
+See LICENSE for the full text.
+
+--------------------------------------------------------------------------------
+
+This software accesses data from EVE Online via the EVE Swagger Interface (ESI).
+Use of EVE Online data is subject to the CCP Developer License Agreement:
+https://developers.eveonline.com/license-agreement
+
+© CCP hf. All rights reserved. "EVE", "EVE Online", "CCP", and all related
+logos and images are trademarks or registered trademarks of CCP hf.
+
+ER Bridge is an independent application and is not affiliated with,
+endorsed by, or supported by CCP Games or CCP hf.

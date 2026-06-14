@@ -1,0 +1,40 @@
+## ADDED Requirements
+
+### Requirement: Health endpoint
+
+The service SHALL expose `GET /health` returning status, the loaded SDE build
+number, system and edge counts, the timestamp of the last successful hot-reload
+swap (`last_reload_at`, `null` until the first real swap), and EVE-Scout freshness
+(`sig_count` and `last_fetch_at`, `0`/`null` until the first successful fetch). The
+health endpoint SHALL require no authentication.
+
+#### Scenario: Health reflects loaded graph
+
+- **WHEN** the graph is loaded and `GET /health` is called
+- **THEN** the response reports `status` ok with the build number and non-zero
+  system and edge counts
+
+#### Scenario: Freshness fields before first refresh
+
+- **WHEN** the service has loaded from cache but never performed a hot-reload swap
+  and never reached EVE-Scout
+- **THEN** `last_reload_at` is `null` and the EVE-Scout fields indicate no fetch yet
+
+### Requirement: OpenAPI specification and Swagger UI
+
+The service SHALL generate an OpenAPI 3.1 document from its handlers and DTOs and
+serve it as JSON, and SHALL serve an interactive Swagger UI. Both SHALL be served
+unconditionally (no authentication), since the service is docker-internal. All
+request and response DTOs SHALL be represented in the generated schema, including
+reserved optional fields.
+
+#### Scenario: OpenAPI document is served
+
+- **WHEN** the OpenAPI JSON endpoint is requested
+- **THEN** a valid OpenAPI 3.1 document describing `/route/gate` and `/health` is
+  returned
+
+#### Scenario: Swagger UI is reachable
+
+- **WHEN** the Swagger UI path is requested
+- **THEN** the interactive documentation page loads
