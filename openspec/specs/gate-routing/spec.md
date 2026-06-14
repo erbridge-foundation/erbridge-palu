@@ -8,10 +8,10 @@ and an avoid list.
 
 ## Requirements
 
-### Requirement: Gate route endpoint
+### Requirement: System route endpoint
 
-The service SHALL expose `POST /route/gate` that computes a route between two solar
-systems over the gate graph plus the per-request overlay. The request SHALL accept
+The service SHALL expose `POST /api/v1/route/system` that computes a route between
+two solar systems over the gate graph plus the per-request overlay. The request SHALL accept
 `from`, `to` (system name or id), a `preference`, an optional `avoid[]`, an
 optional `use_wormholes` switch with `connections[]`, optional `include_thera` /
 `include_turnur` / `include_zarzakh` flags, and SHALL return the jump count and an
@@ -62,11 +62,20 @@ route still resolves when no fully-preferred path exists.
 ### Requirement: Avoid list
 
 The service SHALL exclude every system in the request's `avoid[]` from being
-traversed. Avoided systems SHALL never appear as transit hops. If `from` or `to`
-is itself avoided, the route SHALL be treated as unreachable.
+traversed. Avoided systems SHALL never appear as transit hops. The exclusion
+applies to transit only: a system that is the route's own `from` or `to` SHALL
+remain usable as that endpoint even when it is in `avoid[]` or excluded by
+default (e.g. Zarzakh), since an endpoint is never a transit hop.
 
 #### Scenario: Avoided system is routed around
 
 - **WHEN** a system on the shortest path is in `avoid[]`
 - **THEN** the returned route does not pass through that system, or is unreachable
   if no alternative exists
+
+#### Scenario: Excluded system is usable as an endpoint
+
+- **WHEN** a system excluded from transit (in `avoid[]`, or Zarzakh by default)
+  is the route's `from` or `to`
+- **THEN** the route resolves with that system as the endpoint and does not treat
+  it as unreachable

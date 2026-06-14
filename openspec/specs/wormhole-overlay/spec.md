@@ -35,13 +35,24 @@ the parsed snapshot behind an `ArcSwap`. The service SHALL NOT call EVE-Scout on
 the request path. When `include_thera` (origin system 31000005) or
 `include_turnur` (origin system 30002086) is set, the corresponding signatures
 SHALL be added to the per-request overlay using the same mechanism as user
-connections. Signatures whose `expires_at` is in the past SHALL be skipped when
-building the overlay. Only entries with `signature_type` `wormhole` SHALL be used.
+connections. A hub's signatures SHALL ALSO be added when that hub is the route's
+own `from` or `to`, regardless of the `include_*` flag: the flag governs using
+the hub as a mid-route shortcut, but reaching it as an endpoint must not require
+opting in (Thera is a gateless wormhole and would otherwise be unreachable as a
+source or destination). Signatures whose `expires_at` is in the past SHALL be
+skipped when building the overlay. Only entries with `signature_type` `wormhole`
+SHALL be used.
 
 #### Scenario: include_thera injects Thera connections
 
 - **WHEN** a request sets `include_thera` and the snapshot has live Thera signatures
 - **THEN** those wormhole edges are available to routing for that request
+
+#### Scenario: Thera/Turnur usable as an endpoint without the flag
+
+- **WHEN** Thera or Turnur is the route's `from` or `to` and the matching
+  `include_*` flag is unset
+- **THEN** that hub's live signatures are still added so the endpoint is reachable
 
 #### Scenario: EVE-Scout unavailable
 

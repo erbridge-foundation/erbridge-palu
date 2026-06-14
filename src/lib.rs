@@ -48,7 +48,7 @@ pub fn build_router(state: AppState) -> Router {
     use tower_http::trace::TraceLayer;
 
     let (router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
-        .routes(routes!(handlers::route::route_gate))
+        .routes(routes!(handlers::route::route_system))
         .routes(routes!(handlers::health::health))
         .split_for_parts();
 

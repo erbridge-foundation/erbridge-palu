@@ -8,7 +8,7 @@ use rustc_hash::FxHashSet;
 
 use crate::dto::{GateRouteRequest, GateRouteResponse, RouteStep, SystemRef};
 use crate::error::AppError;
-use crate::eve_scout::EveScoutSnapshot;
+use crate::eve_scout::{self, EveScoutSnapshot};
 use crate::model::GraphData;
 use crate::routing::{Path, Preference, RouteContext, shortest_path, with_scratch};
 
@@ -29,10 +29,15 @@ pub fn compute_gate_route(
     let from = resolve_system(graph, &req.from)?;
     let to = resolve_system(graph, &req.to)?;
 
-    let avoid = assemble_avoid_set(graph, req)?;
+    let mut avoid = assemble_avoid_set(graph, req)?;
+    // The avoid set is about *transit*: the route's own endpoints are never
+    // transit hops, so a system is usable as `from`/`to` even when it would
+    // otherwise be excluded (e.g. Zarzakh by default, or a user-avoided system).
+    avoid.remove(&from);
+    avoid.remove(&to);
     let mut ctx = RouteContext::new(graph, avoid, preference);
 
-    apply_overlay(graph, scout, req, &mut ctx)?;
+    apply_overlay(graph, scout, req, from, to, &mut ctx)?;
 
     let path = with_scratch(|scratch| shortest_path(&ctx, from, to, scratch))
         .ok_or(AppError::Unreachable)?;
@@ -59,12 +64,20 @@ fn assemble_avoid_set(
     Ok(avoid)
 }
 
-/// Add wormhole edges to the overlay from user connections and (when opted in)
-/// live EVE-Scout Thera/Turnur signatures. Expired sigs are dropped here.
+/// Add wormhole edges to the overlay from user connections and live EVE-Scout
+/// Thera/Turnur signatures. Expired sigs are dropped here.
+///
+/// A hub's signatures are added when its `include_*` flag is set OR when that
+/// hub is the route's own `from`/`to`. The flag governs using the hub as a
+/// mid-route shortcut; reaching the hub as an endpoint must not require opting
+/// in — Thera in particular is a gateless wormhole, so without its sigs it would
+/// be unreachable as a source or destination.
 fn apply_overlay(
     graph: &GraphData,
     scout: &EveScoutSnapshot,
     req: &GateRouteRequest,
+    from: NodeIndex,
+    to: NodeIndex,
     ctx: &mut RouteContext<'_>,
 ) -> Result<(), AppError> {
     if req.use_wormholes {
@@ -76,10 +89,16 @@ fn apply_overlay(
     }
 
     let now = Utc::now();
-    if req.include_thera {
+    let is_endpoint = |hub_id: i64| {
+        graph
+            .id_to_idx
+            .get(&hub_id)
+            .is_some_and(|&idx| idx == from || idx == to)
+    };
+    if req.include_thera || is_endpoint(eve_scout::THERA_SYSTEM_ID) {
         add_scout_edges(graph, ctx, &scout.thera, now);
     }
-    if req.include_turnur {
+    if req.include_turnur || is_endpoint(eve_scout::TURNUR_SYSTEM_ID) {
         add_scout_edges(graph, ctx, &scout.turnur, now);
     }
     Ok(())
@@ -252,6 +271,36 @@ mod tests {
     }
 
     #[test]
+    fn zarzakh_usable_as_destination_without_opt_in() {
+        // Excluding Zarzakh is about transit, not endpoints: routing TO Zarzakh
+        // must succeed even with the default exclusion.
+        let gd = zarzakh_graph();
+        let scout = EveScoutSnapshot::default();
+        let resp = compute_gate_route(&gd, &scout, &req("G", "Zarzakh")).unwrap();
+        assert_eq!(resp.jumps, 1);
+        assert_eq!(resp.path.last().unwrap().system, "Zarzakh");
+    }
+
+    #[test]
+    fn zarzakh_usable_as_source_without_opt_in() {
+        let gd = zarzakh_graph();
+        let scout = EveScoutSnapshot::default();
+        let resp = compute_gate_route(&gd, &scout, &req("Zarzakh", "H")).unwrap();
+        assert_eq!(resp.jumps, 1);
+        assert_eq!(resp.path[0].system, "Zarzakh");
+    }
+
+    #[test]
+    fn zarzakh_endpoint_still_not_a_transit_hop() {
+        // Zarzakh as an endpoint is fine, but it must still never be transited:
+        // G→H (Zarzakh the only bridge) is unreachable by default.
+        let gd = zarzakh_graph();
+        let scout = EveScoutSnapshot::default();
+        let err = compute_gate_route(&gd, &scout, &req("G", "H")).unwrap_err();
+        assert!(matches!(err, AppError::Unreachable));
+    }
+
+    #[test]
     fn user_avoid_routes_around() {
         let gd = zarzakh_graph();
         let scout = EveScoutSnapshot::default();
@@ -261,6 +310,19 @@ mod tests {
         // Avoiding the only bridge → unreachable even with include_zarzakh.
         let err = compute_gate_route(&gd, &scout, &r).unwrap_err();
         assert!(matches!(err, AppError::Unreachable));
+    }
+
+    #[test]
+    fn avoided_endpoint_is_still_usable() {
+        // The from/to exemption applies to any avoided system, not just Zarzakh:
+        // routing TO an explicitly-avoided endpoint still resolves.
+        let gd = zarzakh_graph();
+        let scout = EveScoutSnapshot::default();
+        let mut r = req("G", "Zarzakh");
+        r.include_zarzakh = true;
+        r.avoid = vec![SystemRef::Name("Zarzakh".into())];
+        let resp = compute_gate_route(&gd, &scout, &r).unwrap();
+        assert_eq!(resp.path.last().unwrap().system, "Zarzakh");
     }
 
     #[test]
@@ -377,6 +439,71 @@ mod tests {
             compute_gate_route(&gd, &scout, &r).unwrap_err(),
             AppError::Unreachable
         ));
+    }
+
+    /// Thera (gateless WH) and Turnur (k-space) plus two K-space systems.
+    /// EVE-Scout: Thera→G and Turnur→H. Used by the endpoint-exemption tests.
+    fn scout_hub_graph() -> (GraphData, EveScoutSnapshot) {
+        let raw = RawSdeData {
+            systems: vec![
+                sys(eve_scout::THERA_SYSTEM_ID, "Thera", SecClass::Wormhole),
+                sys(eve_scout::TURNUR_SYSTEM_ID, "Turnur", SecClass::Lowsec),
+                sys(1, "G", SecClass::Nullsec),
+                sys(2, "H", SecClass::Nullsec),
+            ],
+            gate_pairs: vec![(1, 2)], // G—H gate; Thera/Turnur reachable only via sigs here
+        };
+        let gd = build_graph_data(raw, 1);
+        let scout = EveScoutSnapshot {
+            thera: vec![live_sig(eve_scout::THERA_SYSTEM_ID, 1)], // Thera↔G
+            turnur: vec![live_sig(eve_scout::TURNUR_SYSTEM_ID, 2)], // Turnur↔H
+            fetched_at: Some(Utc::now()),
+        };
+        (gd, scout)
+    }
+
+    #[test]
+    fn thera_reachable_as_destination_without_include_flag() {
+        // Thera is a gateless wormhole; routing TO it must add its sigs even
+        // though include_thera is false (endpoint != mid-route shortcut).
+        let (gd, scout) = scout_hub_graph();
+        let r = req("G", "Thera"); // include_thera defaults to false
+        assert!(!r.include_thera);
+        let resp = compute_gate_route(&gd, &scout, &r).unwrap();
+        assert_eq!(resp.jumps, 1);
+        assert_eq!(resp.path.last().unwrap().system, "Thera");
+        assert_eq!(resp.path.last().unwrap().via, "wormhole");
+    }
+
+    #[test]
+    fn thera_usable_as_source_without_include_flag() {
+        let (gd, scout) = scout_hub_graph();
+        let r = req("Thera", "G");
+        let resp = compute_gate_route(&gd, &scout, &r).unwrap();
+        assert_eq!(resp.jumps, 1);
+        assert_eq!(resp.path[0].system, "Thera");
+    }
+
+    #[test]
+    fn turnur_endpoint_adds_its_sigs_without_include_flag() {
+        // Turnur has K-space gates, but its EVE-Scout edges should still be
+        // available when it is an endpoint: H→Turnur resolves via the sig.
+        let (gd, scout) = scout_hub_graph();
+        let r = req("H", "Turnur");
+        let resp = compute_gate_route(&gd, &scout, &r).unwrap();
+        assert_eq!(resp.path.last().unwrap().system, "Turnur");
+        assert_eq!(resp.path.last().unwrap().via, "wormhole");
+    }
+
+    #[test]
+    fn thera_not_a_mid_route_shortcut_without_include_flag() {
+        // When Thera is NOT an endpoint and include_thera is false, its sigs are
+        // not added, so it can't be used as a transit shortcut. Routing G→H must
+        // use the gate (1 jump), never detour through Thera.
+        let (gd, scout) = scout_hub_graph();
+        let resp = compute_gate_route(&gd, &scout, &req("G", "H")).unwrap();
+        assert_eq!(resp.jumps, 1);
+        assert!(!resp.path.iter().any(|s| s.system == "Thera"));
     }
 
     #[test]

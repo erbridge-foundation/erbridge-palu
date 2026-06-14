@@ -5,7 +5,7 @@ HTTP 200
 [Asserts]
 header "Content-Type" contains "application/json"
 jsonpath "$.openapi" startsWith "3."
-jsonpath "$.paths['/route/gate']" exists
+jsonpath "$.paths['/api/v1/route/system']" exists
 jsonpath "$.paths['/health']" exists
 
 

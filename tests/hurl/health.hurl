@@ -8,8 +8,8 @@ jsonpath "$.status" == "ok"
 jsonpath "$.systems" > 0
 jsonpath "$.edges" > 0
 # Freshness fields are null/0 until the first reload swap / EVE-Scout fetch.
-jsonpath "$.last_reload_at" == null
+jsonpath "$.last_sde_reload_at" == null
 jsonpath "$.sig_count" == 0
-jsonpath "$.last_fetch_at" == null
+jsonpath "$.last_evescout_fetch_at" == null
 # /health is intentionally un-enveloped (no `data` wrapper).
 jsonpath "$.data" not exists

@@ -11,7 +11,9 @@ use crate::routing::Preference;
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(untagged)]
 pub enum SystemRef {
+    #[schema(example = "Jita")]
     Name(String),
+    #[schema(example = 30000142)]
     Id(i64),
 }
 
@@ -47,11 +49,19 @@ pub struct WhConnection {
     /// `medium`/`large`/`xlarge`/`capital`. Reserved for future ship-fit
     /// filtering — parsed and stored but **not enforced** in this foundation.
     #[serde(default)]
+    #[schema(example = "xlarge")]
     pub max_size: Option<String>,
 }
 
-/// Request body for `POST /route/gate`.
+/// Request body for `POST /api/v1/route/system`. The schema example shows a
+/// minimal request; optional fields default as documented (notably
+/// `include_zarzakh` defaults to `false`).
 #[derive(Debug, Clone, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "from": "Jita",
+    "to": "Amarr",
+    "preference": "shortest"
+}))]
 pub struct GateRouteRequest {
     pub from: SystemRef,
     pub to: SystemRef,
@@ -63,23 +73,27 @@ pub struct GateRouteRequest {
     pub avoid: Vec<SystemRef>,
     /// When true, `connections[]` wormhole edges are added to the overlay.
     #[serde(default)]
+    #[schema(default = false, example = false)]
     pub use_wormholes: bool,
     /// Per-request wormhole connections (only used when `use_wormholes`).
     #[serde(default)]
     pub connections: Vec<WhConnection>,
     /// Add live EVE-Scout Thera signatures to the overlay.
     #[serde(default)]
+    #[schema(default = false, example = false)]
     pub include_thera: bool,
     /// Add live EVE-Scout Turnur signatures to the overlay.
     #[serde(default)]
+    #[schema(default = false, example = false)]
     pub include_turnur: bool,
     /// Allow Zarzakh (30100000) as a transit hop. Default `false` because its
     /// gate-lock mechanic strands ships; the caller owns the 6-hour warning.
     #[serde(default)]
+    #[schema(default = false, example = false)]
     pub include_zarzakh: bool,
 }
 
-/// Response body for `POST /route/gate`.
+/// Response body for `POST /api/v1/route/system`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GateRouteResponse {
     pub jumps: usize,
@@ -101,16 +115,17 @@ pub struct RouteStep {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct HealthResponse {
     pub status: String,
-    pub build_number: u64,
+    /// The loaded SDE build number (CCP's `buildNumber`).
+    pub sde_version: u64,
     pub systems: usize,
     pub edges: usize,
-    /// RFC3339 timestamp of the last successful hot-reload swap; `null` until
-    /// the first real swap.
-    pub last_reload_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// RFC3339 timestamp of the last successful SDE hot-reload swap; `null`
+    /// until the first real swap.
+    pub last_sde_reload_at: Option<chrono::DateTime<chrono::Utc>>,
     /// EVE-Scout signature count in the current snapshot (`0` until first fetch).
     pub sig_count: usize,
     /// When EVE-Scout was last fetched; `null` until the first successful fetch.
-    pub last_fetch_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_evescout_fetch_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[cfg(test)]

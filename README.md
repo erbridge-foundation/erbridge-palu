@@ -60,17 +60,19 @@ cache in a named volume. It has no auth — keep it on a trusted network.
 
 | Method | Path                     | Description                          |
 |--------|--------------------------|--------------------------------------|
-| POST   | `/route/gate`            | Compute a gate route                 |
-| GET    | `/health`                | Build number, graph size, freshness  |
+| POST   | `/api/v1/route/system`   | Compute a system-to-system route     |
+| GET    | `/health`                | SDE version, graph size, freshness   |
 | GET    | `/swagger-ui`            | Interactive API docs                 |
 | GET    | `/api-docs/openapi.json` | OpenAPI 3.1 document                 |
 
-### `POST /route/gate`
+### `POST /api/v1/route/system`
 
-`from` and `to` accept a system name (case-insensitive) or a numeric SDE id.
+Routes between two systems over the gate graph plus the per-request wormhole
+overlay. `from` and `to` accept a system name (case-insensitive) or a numeric
+SDE id.
 
 ```sh
-curl -s localhost:5001/route/gate \
+curl -s localhost:5001/api/v1/route/system \
   -H 'content-type: application/json' \
   -d '{"from": "Jita", "to": "Amarr", "preference": "shortest"}'
 ```

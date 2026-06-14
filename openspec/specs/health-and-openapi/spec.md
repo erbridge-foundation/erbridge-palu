@@ -11,22 +11,24 @@ and interactive Swagger UI.
 ### Requirement: Health endpoint
 
 The service SHALL expose `GET /health` returning status, the loaded SDE build
-number, system and edge counts, the timestamp of the last successful hot-reload
-swap (`last_reload_at`, `null` until the first real swap), and EVE-Scout freshness
-(`sig_count` and `last_fetch_at`, `0`/`null` until the first successful fetch). The
-health endpoint SHALL require no authentication.
+number (`sde_version`), system and edge counts, the timestamp of the last
+successful SDE hot-reload swap (`last_sde_reload_at`, `null` until the first real
+swap), and EVE-Scout freshness (`sig_count` and `last_evescout_fetch_at`,
+`0`/`null` until the first successful fetch). The health endpoint SHALL require no
+authentication.
 
 #### Scenario: Health reflects loaded graph
 
 - **WHEN** the graph is loaded and `GET /health` is called
-- **THEN** the response reports `status` ok with the build number and non-zero
+- **THEN** the response reports `status` ok with the `sde_version` and non-zero
   system and edge counts
 
 #### Scenario: Freshness fields before first refresh
 
 - **WHEN** the service has loaded from cache but never performed a hot-reload swap
   and never reached EVE-Scout
-- **THEN** `last_reload_at` is `null` and the EVE-Scout fields indicate no fetch yet
+- **THEN** `last_sde_reload_at` is `null` and the EVE-Scout fields indicate no
+  fetch yet
 
 ### Requirement: OpenAPI specification and Swagger UI
 
@@ -39,7 +41,7 @@ reserved optional fields.
 #### Scenario: OpenAPI document is served
 
 - **WHEN** the OpenAPI JSON endpoint is requested
-- **THEN** a valid OpenAPI 3.1 document describing `/route/gate` and `/health` is
+- **THEN** a valid OpenAPI 3.1 document describing `/api/v1/route/system` and `/health` is
   returned
 
 #### Scenario: Swagger UI is reachable

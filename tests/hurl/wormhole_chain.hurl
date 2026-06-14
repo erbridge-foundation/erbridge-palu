@@ -21,7 +21,7 @@
 
 # ── J120455 -> J172840: 14 jumps, bridging the two chains via K-space ─────────
 # J120455 -(WH)-> Lashkai -(9 gates through Amarr)-> Martha -(4 WH)-> J172840.
-POST {{base_url}}/route/gate
+POST {{base_url}}/api/v1/route/system
 Content-Type: application/json
 {
   "from": "J120455",
@@ -64,7 +64,7 @@ jsonpath "$.path[*].via" contains "stargate"
 jsonpath "$.path[*].system" contains "Martha"
 
 # ── reverse is symmetric: J172840 -> J120455 is also 14 ───────────────────────
-POST {{base_url}}/route/gate
+POST {{base_url}}/api/v1/route/system
 Content-Type: application/json
 {
   "from": "J172840",
@@ -85,7 +85,7 @@ HTTP 200
 jsonpath "$.jumps" == 14
 
 # ── no connections: the two chains are disconnected -> unreachable ────────────
-POST {{base_url}}/route/gate
+POST {{base_url}}/api/v1/route/system
 Content-Type: application/json
 {
   "from": "J120455",
@@ -99,7 +99,7 @@ jsonpath "$.error" == "unreachable"
 # ── only chain A supplied: can reach its exits, but not J172840 ───────────────
 # Without chain B's wormholes there is no way back into J-space on the far side,
 # so the route is unreachable even though K-space is traversable.
-POST {{base_url}}/route/gate
+POST {{base_url}}/api/v1/route/system
 Content-Type: application/json
 {
   "from": "J120455",
@@ -121,7 +121,7 @@ jsonpath "$.error" == "unreachable"
 # ── a wormhole NOT on the map is unreachable even with the full chain ─────────
 # J105443 is a real J-space system with no gates and no overlay edge, so no
 # amount of chain connections can reach it.
-POST {{base_url}}/route/gate
+POST {{base_url}}/api/v1/route/system
 Content-Type: application/json
 {
   "from": "J120455",
@@ -140,7 +140,7 @@ jsonpath "$.error" == "unreachable"
 # ── J120455 -> Jita, shortest = 13 ───────────────────────────────────────────
 # Shortest exits deep into chain A: J120455 -(WH)-> J131142 -(WH)-> Amoderia
 # (0.4, Verge Vendor), then 11 gates to Jita.
-POST {{base_url}}/route/gate
+POST {{base_url}}/api/v1/route/system
 Content-Type: application/json
 {
   "from": "J120455",
@@ -166,7 +166,7 @@ jsonpath "$.path[-1].system" == "Jita"
 jsonpath "$.path[-1].via" == "stargate"
 
 # ── J120455 -> Jita, safest = 25: all-highsec via Orduin ─────────────────────
-POST {{base_url}}/route/gate
+POST {{base_url}}/api/v1/route/system
 Content-Type: application/json
 {
   "from": "J120455",
@@ -193,7 +193,7 @@ jsonpath "$.path[*].sec_class" not contains "Nullsec"
 
 # ── deep wormhole -> K-space: J133525 (far end of chain A) -> Adar = 17 ───────
 # 3 WH hops out of chain A, K-space gates, then 1 WH into Adar's branch.
-POST {{base_url}}/route/gate
+POST {{base_url}}/api/v1/route/system
 Content-Type: application/json
 {
   "from": "J133525",
@@ -216,7 +216,7 @@ jsonpath "$.path[-1].system" == "Adar"
 
 # ── J172840 -> Amarr via the Adar branch = 10 ────────────────────────────────
 # 4 wormhole hops out to Adar (0.8, Tash-Murkon), then 6 gates to Amarr.
-POST {{base_url}}/route/gate
+POST {{base_url}}/api/v1/route/system
 Content-Type: application/json
 {
   "from": "J172840",

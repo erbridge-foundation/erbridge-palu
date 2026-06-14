@@ -1,4 +1,4 @@
-//! `POST /route/gate` handler.
+//! `POST /api/v1/route/system` handler.
 
 use axum::{Json, extract::State};
 
@@ -7,10 +7,11 @@ use crate::dto::{GateRouteRequest, GateRouteResponse};
 use crate::error::AppError;
 use crate::services::route::compute_gate_route;
 
-/// Compute a gate route over the SDE graph plus the per-request overlay.
+/// Compute a system-to-system route over the SDE gate graph plus the
+/// per-request wormhole overlay.
 #[utoipa::path(
     post,
-    path = "/route/gate",
+    path = "/api/v1/route/system",
     request_body = GateRouteRequest,
     responses(
         (status = 200, description = "Route found", body = GateRouteResponse),
@@ -19,7 +20,7 @@ use crate::services::route::compute_gate_route;
     ),
     tag = "routing",
 )]
-pub async fn route_gate(
+pub async fn route_system(
     State(state): State<AppState>,
     Json(req): Json<GateRouteRequest>,
 ) -> Result<Json<GateRouteResponse>, AppError> {

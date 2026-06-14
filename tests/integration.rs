@@ -38,7 +38,7 @@ fn fixture_state() -> AppState {
 async fn post_route(state: AppState, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
     let app = build_router(state);
     let req = Request::builder()
-        .uri("/route/gate")
+        .uri("/api/v1/route/system")
         .method("POST")
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
@@ -285,6 +285,42 @@ async fn include_thera_uses_injected_snapshot() {
     assert_eq!(body["jumps"], 3);
 }
 
+#[tokio::test]
+async fn thera_reachable_as_dest_without_include_flag() {
+    // Thera is a gateless wormhole. With a live Thera↔Akhragan sig, routing TO
+    // Thera must resolve even though include_thera is omitted (defaults false) —
+    // an EVE-Scout hub is usable as an endpoint without opting in.
+    let state = fixture_state();
+    let snap = EveScoutSnapshot {
+        thera: vec![Signature {
+            out_system_id: THERA_SYSTEM_ID,
+            in_system_id: 30002197, // Akhragan
+            in_system_name: "Akhragan".into(),
+            max_ship_size: Some("xlarge".into()),
+            expires_at: Utc::now() + chrono::Duration::hours(2),
+        }],
+        turnur: vec![],
+        fetched_at: Some(Utc::now()),
+    };
+    state.eve_scout.store(Arc::new(snap));
+
+    let (status, body) = post_route(
+        state,
+        serde_json::json!({ "from": "Akhragan", "to": "Thera" }),
+    )
+    .await;
+    assert_eq!(status, 200, "body={body}");
+    assert_eq!(body["jumps"], 1);
+    assert_eq!(
+        body["path"].as_array().unwrap().last().unwrap()["system"],
+        "Thera"
+    );
+    assert_eq!(
+        body["path"].as_array().unwrap().last().unwrap()["via"],
+        "wormhole"
+    );
+}
+
 // ── health + openapi ──────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -303,14 +339,14 @@ async fn health_reports_graph_summary_without_auth() {
     let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["status"], "ok");
-    // Build number is the fixture's cached SDE build (whatever metadata.json says).
-    assert!(body["build_number"].as_u64().unwrap() > 0);
+    // sde_version is the fixture's cached SDE build (whatever metadata.json says).
+    assert!(body["sde_version"].as_u64().unwrap() > 0);
     assert!(body["systems"].as_u64().unwrap() > 0);
     assert!(body["edges"].as_u64().unwrap() > 0);
     // Freshness fields are null/0 before any reload swap or EVE-Scout fetch.
-    assert!(body["last_reload_at"].is_null());
+    assert!(body["last_sde_reload_at"].is_null());
     assert_eq!(body["sig_count"], 0);
-    assert!(body["last_fetch_at"].is_null());
+    assert!(body["last_evescout_fetch_at"].is_null());
 }
 
 #[tokio::test]
@@ -329,7 +365,7 @@ async fn openapi_json_is_served() {
     let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert!(doc["openapi"].as_str().unwrap().starts_with("3."));
-    assert!(doc["paths"]["/route/gate"].is_object());
+    assert!(doc["paths"]["/api/v1/route/system"].is_object());
     assert!(doc["paths"]["/health"].is_object());
 }
 
