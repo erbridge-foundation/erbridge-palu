@@ -1,12 +1,14 @@
 //! End-to-end handler→service→graph tests against the cached SDE fixture in
-//! `tests/fixtures/sde`. No live CCP or EVE-Scout calls — the graph is loaded
-//! from disk and the EVE-Scout snapshot is injected directly into `AppState`.
+//! `tests/fixtures/sde` (the full real SDE, loaded via the normal cache path).
+//! No live CCP or EVE-Scout calls — the graph is loaded from disk and the
+//! EVE-Scout snapshot is injected directly into `AppState`.
 //!
-//! Fixture topology (real SDE rows for these systems):
-//! - Main region (56 systems): the real Jita↔Amarr corridor. Shortest is 11
-//!   gate jumps (one lowsec hop); safest stays all-highsec at ~45 jumps.
-//! - Zarzakh trio: G-0Q86 — Zarzakh — H-PA29 (Zarzakh is the only bridge).
-//! - HD-JVQ island: HD-JVQ — VVD-O6 (disconnected, for unreachable tests).
+//! Reference facts on the real SDE:
+//! - Jita → Amarr is 11 gate jumps (shortest, one lowsec hop); safest stays
+//!   all-highsec and is much longer.
+//! - G-0Q86 → H-PA29 is 2 jumps through Zarzakh (the short bridge), which the
+//!   default excludes so the route detours.
+//! - J-space systems are gateless: unreachable without a wormhole overlay.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -174,14 +176,26 @@ async fn avoid_reroutes_or_lengthens() {
 
 #[tokio::test]
 async fn zarzakh_excluded_by_default() {
-    // G-0Q86 → H-PA29 only routes via Zarzakh; default excludes it.
+    // G-0Q86 → H-PA29 is 2 jumps through Zarzakh; by default Zarzakh is excluded
+    // so the route detours the long way and never transits Zarzakh.
     let (status, body) = post_route(
         fixture_state(),
         serde_json::json!({ "from": "G-0Q86", "to": "H-PA29" }),
     )
     .await;
-    assert_eq!(status, 404, "body={body}");
-    assert_eq!(body["error"], "unreachable");
+    assert_eq!(status, 200, "body={body}");
+    assert!(
+        body["jumps"].as_u64().unwrap() > 2,
+        "should detour around Zarzakh"
+    );
+    assert!(
+        !body["path"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["system"] == "Zarzakh"),
+        "default route must not transit Zarzakh"
+    );
 }
 
 #[tokio::test]
@@ -217,10 +231,10 @@ async fn unknown_system_is_400() {
 
 #[tokio::test]
 async fn unreachable_is_404() {
-    // Jita (main region) and HD-JVQ (isolated island) are disconnected.
+    // J105443 is a gateless wormhole system with no overlay edge → unreachable.
     let (status, body) = post_route(
         fixture_state(),
-        serde_json::json!({ "from": "Jita", "to": "HD-JVQ" }),
+        serde_json::json!({ "from": "Jita", "to": "J105443" }),
     )
     .await;
     assert_eq!(status, 404, "body={body}");
@@ -289,7 +303,8 @@ async fn health_reports_graph_summary_without_auth() {
     let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["status"], "ok");
-    assert_eq!(body["build_number"], 1);
+    // Build number is the fixture's cached SDE build (whatever metadata.json says).
+    assert!(body["build_number"].as_u64().unwrap() > 0);
     assert!(body["systems"].as_u64().unwrap() > 0);
     assert!(body["edges"].as_u64().unwrap() > 0);
     // Freshness fields are null/0 before any reload swap or EVE-Scout fetch.

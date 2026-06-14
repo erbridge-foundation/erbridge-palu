@@ -1,5 +1,5 @@
 # POST /route/gate — HTTP contract for the routing endpoint, run against the
-# SDE fixture (61 systems; Jita↔Amarr corridor, Zarzakh trio, HD-JVQ island).
+# full real SDE cache fixture (tests/fixtures/sde).
 
 # ── shortest: Jita → Amarr is 11 gate jumps ──────────────────────────────────
 POST {{base_url}}/route/gate
@@ -108,19 +108,7 @@ HTTP 200
 [Asserts]
 jsonpath "$.path[*].system" not contains "Perimeter"
 
-# ── Zarzakh excluded by default → unreachable (404) ──────────────────────────
-POST {{base_url}}/route/gate
-Content-Type: application/json
-{
-  "from": "G-0Q86",
-  "to": "H-PA29"
-}
-
-HTTP 404
-[Asserts]
-jsonpath "$.error" == "unreachable"
-
-# ── Zarzakh opt-in allows transit ────────────────────────────────────────────
+# ── Zarzakh opt-in allows a 2-jump transit (G-0Q86 → Zarzakh → H-PA29) ───────
 POST {{base_url}}/route/gate
 Content-Type: application/json
 {
@@ -134,6 +122,21 @@ HTTP 200
 jsonpath "$.jumps" == 2
 jsonpath "$.path[*].system" contains "Zarzakh"
 
+# ── Zarzakh excluded by default: the route detours around it (no Zarzakh hop) ──
+# On the full SDE a long gate detour exists, so excluding Zarzakh reroutes rather
+# than failing — the key contract is that Zarzakh is never a transit hop.
+POST {{base_url}}/route/gate
+Content-Type: application/json
+{
+  "from": "G-0Q86",
+  "to": "H-PA29"
+}
+
+HTTP 200
+[Asserts]
+jsonpath "$.path[*].system" not contains "Zarzakh"
+jsonpath "$.jumps" > 2
+
 # ── unknown system → 400 ─────────────────────────────────────────────────────
 POST {{base_url}}/route/gate
 Content-Type: application/json
@@ -146,12 +149,12 @@ HTTP 400
 [Asserts]
 jsonpath "$.error" == "unknown_system"
 
-# ── unreachable across disconnected components → 404 ─────────────────────────
+# ── unreachable: a gateless wormhole with no overlay can't be reached ─────────
 POST {{base_url}}/route/gate
 Content-Type: application/json
 {
   "from": "Jita",
-  "to": "HD-JVQ"
+  "to": "J105443"
 }
 
 HTTP 404

@@ -138,8 +138,16 @@ impl<'a> RouteContext<'a> {
     }
 
     fn wormhole_penalty(&self, src: NodeIndex, dest: NodeIndex) -> f32 {
+        // Penalise a hop only when it is genuinely a wormhole — i.e. an overlay
+        // edge with no parallel gate. When a real gate also connects the pair,
+        // that gate is the cheaper way across and takes priority (matching
+        // `step_via`'s labelling), so no penalty applies.
         match self.preference {
-            Preference::PreferGates if self.is_wh_edge(src, dest) => WORMHOLE_PENALTY,
+            Preference::PreferGates
+                if self.is_wh_edge(src, dest) && !self.has_gate_edge(src, dest) =>
+            {
+                WORMHOLE_PENALTY
+            }
             _ => 0.0,
         }
     }
@@ -621,6 +629,21 @@ mod tests {
         assert_eq!(path.len(), 3, "should take the 2-gate path, not the WH");
         assert_eq!(path[1], gd.id_to_idx[&2], "middle hop is the gate system");
         assert!(!ctx.is_wh_edge(path[0], path[1]));
+    }
+
+    #[test]
+    fn prefer_gates_does_not_penalise_a_gate_with_a_parallel_wormhole() {
+        // Regression: a WH duplicating an existing 1-gate hop (A↔B) must not
+        // make that hop cost 1 + penalty. The real gate wins, so A→B stays a
+        // single stargate jump rather than detouring around.
+        let gd = gate_chain(3); // A—B—C
+        let (a, b) = (gd.id_to_idx[&1], gd.id_to_idx[&2]);
+        let mut ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::PreferGates);
+        ctx.add_connection(a, b); // WH parallel to the A—B gate
+        let mut s = DijkstraScratch::new();
+        let path = shortest_path(&ctx, a, b, &mut s).unwrap();
+        assert_eq!(path.len(), 2, "direct gate hop, no detour");
+        assert_eq!(ctx.step_via(path[0], path[1]), "stargate");
     }
 
     #[test]

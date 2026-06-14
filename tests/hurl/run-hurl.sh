@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Boot the service against the checked-in SDE fixture (fully offline — no CCP or
-# EVE-Scout calls), run the HURL suite against it, then tear it down.
+# Boot the service against the checked-in SDE cache fixture (fully offline — no
+# CCP or EVE-Scout calls) and run the HURL suites against it.
+#
+# The fixture mirrors the real on-disk cache layout (tests/fixtures/sde:
+# latest.jsonl, metadata.json, <build>/*.jsonl), so the service loads it through
+# the normal cache path. Reload + EVE-Scout pollers are disabled.
 #
 # Usage: tests/hurl/run-hurl.sh [PORT]
 set -euo pipefail
@@ -11,7 +15,8 @@ BASE_URL="http://localhost:${PORT}"
 
 cargo build --quiet --bin erbridge-geodesic
 
-GEODESIC_SDE_DIR="${ROOT}/tests/fixtures/sde/1" \
+GEODESIC_CACHE_DIR="${ROOT}/tests/fixtures/sde" \
+GEODESIC_SDE_RELOAD_INTERVAL_SECS=0 \
 GEODESIC_EVE_SCOUT_INTERVAL_SECS=0 \
 GEODESIC_PORT="${PORT}" \
 RUST_LOG="${RUST_LOG:-error}" \
@@ -20,7 +25,7 @@ SERVER_PID=$!
 trap 'kill "${SERVER_PID}" 2>/dev/null || true' EXIT
 
 # Wait for the server to come up.
-for _ in $(seq 1 50); do
+for _ in $(seq 1 100); do
     if curl -sf "${BASE_URL}/health" >/dev/null 2>&1; then
         break
     fi
