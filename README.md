@@ -1,5 +1,9 @@
 # erbridge-geodesic
 
+[![Build](https://github.com/erbridge-foundation/erbridge-geodesic/actions/workflows/backend.yml/badge.svg)](https://github.com/erbridge-foundation/erbridge-geodesic/actions/workflows/backend.yml)
+
+---
+
 EVE Online gate-routing REST API. It loads CCP's Static Data Export (SDE),
 builds the New Eden gate graph in memory, and serves routing over HTTP with
 per-request wormhole overlays.
