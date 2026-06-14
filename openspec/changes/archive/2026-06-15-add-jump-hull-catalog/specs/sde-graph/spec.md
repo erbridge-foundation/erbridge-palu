@@ -1,12 +1,4 @@
-# sde-graph Specification
-
-## Purpose
-
-Obtain the EVE Static Data Export, cache it on disk, build and maintain the
-in-memory gate graph and spatial index, and hot-reload them when a newer SDE
-build is published.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: SDE load and disk cache
 
@@ -44,37 +36,6 @@ jump-capable hulls, and SHALL NOT materialise the full file in memory.
   `types.jsonl` or `typeDogma.jsonl`
 - **THEN** the build is treated as incomplete and is re-fetched rather than loaded
   partially
-
-### Requirement: In-memory gate graph and lookups
-
-The service SHALL build an in-memory `GraphData` containing one `System` per solar
-system, an undirected gate graph deduplicated to at most one edge per system pair,
-a system-id→index map, and a case-insensitive name→index map. System security
-class SHALL be derived from raw `securityStatus` (highsec iff non-wormhole and
-`securityStatus >= 0.45`), and wormhole systems SHALL be identified by
-`region_id >= 11_000_000`.
-
-#### Scenario: Directed stargate pairs become one undirected edge
-
-- **WHEN** the SDE contains the two directed stargates linking systems A and B
-- **THEN** the gate graph contains exactly one undirected A–B edge
-
-#### Scenario: Name lookup is case-insensitive
-
-- **WHEN** a caller resolves a system by name in any letter case
-- **THEN** the same system index is returned
-
-### Requirement: kd-tree spatial index
-
-The service SHALL build a 3-D kd-tree spatial index over K-space system positions
-as part of `GraphData` construction. This index is reserved for future
-light-year-distance queries and is not queried by any foundation endpoint.
-
-#### Scenario: Spatial index is built alongside the graph
-
-- **WHEN** `GraphData` is constructed (on startup or hot-reload)
-- **THEN** the kd-tree is populated with K-space system coordinates so it is
-  available without re-touching graph construction later
 
 ### Requirement: SDE hot-reload
 
