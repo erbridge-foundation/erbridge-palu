@@ -8,10 +8,10 @@ EVE Online gate-routing REST API. It loads CCP's Static Data Export (SDE),
 builds the New Eden gate graph in memory, and serves routing over HTTP with
 per-request wormhole overlays.
 
-This is a foundation: black ops staging, wormhole ship-size enforcement, and
-authentication are deliberately **out of scope** and land as additive changes.
-It ships with **no authentication** and is meant to run as a docker-internal
-service (e.g. behind the wormhole mapper) — do not expose it publicly.
+Wormhole ship-size enforcement and authentication are deliberately **out of
+scope** and land as additive changes. It ships with **no authentication** and is
+meant to run as a docker-internal service (e.g. behind the wormhole mapper) — do
+not expose it publicly.
 
 ## The name
 
