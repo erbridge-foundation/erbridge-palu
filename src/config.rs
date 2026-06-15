@@ -41,6 +41,23 @@ pub fn eve_scout_interval() -> Option<Duration> {
     ))
 }
 
+/// The application version. CI derives the real version from git tags and
+/// passes it in via `PALU_APP_VERSION` (set as an image `ENV` from the Docker
+/// `APP_VERSION` build arg). For local, non-Docker runs the env var is unset,
+/// so this falls back to the crate version — which is the placeholder `0.0.0`,
+/// signalling "unversioned dev build". This is the single source of truth for
+/// the version: the `/health` endpoint and the ESI user-agent both read it.
+pub fn app_version() -> String {
+    std::env::var("PALU_APP_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
+}
+
+/// The git commit the build was cut from (`PALU_GIT_COMMIT_SHA`, set as an
+/// image `ENV` from the Docker `GIT_COMMIT_SHA` build arg by CI). `"unknown"`
+/// for local builds where CI did not stamp it.
+pub fn git_commit() -> String {
+    std::env::var("PALU_GIT_COMMIT_SHA").unwrap_or_else(|_| "unknown".to_string())
+}
+
 /// `Some(Duration)` for a positive interval, `None` for `0` (disabled).
 fn interval_from_secs(secs: u64) -> Option<Duration> {
     (secs > 0).then(|| Duration::from_secs(secs))
@@ -103,5 +120,26 @@ mod tests {
     #[test]
     fn interval_positive_enables() {
         assert_eq!(interval_from_secs(3600), Some(Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn app_version_falls_back_to_crate_version() {
+        // SAFETY: env access is process-global; these version vars are not
+        // touched by other tests.
+        unsafe { std::env::remove_var("PALU_APP_VERSION") };
+        // Local (unset) → the crate version, which is the 0.0.0 placeholder.
+        assert_eq!(app_version(), env!("CARGO_PKG_VERSION"));
+        unsafe { std::env::set_var("PALU_APP_VERSION", "1.2.3") };
+        assert_eq!(app_version(), "1.2.3");
+        unsafe { std::env::remove_var("PALU_APP_VERSION") };
+    }
+
+    #[test]
+    fn git_commit_defaults_to_unknown() {
+        unsafe { std::env::remove_var("PALU_GIT_COMMIT_SHA") };
+        assert_eq!(git_commit(), "unknown");
+        unsafe { std::env::set_var("PALU_GIT_COMMIT_SHA", "abc1234") };
+        assert_eq!(git_commit(), "abc1234");
+        unsafe { std::env::remove_var("PALU_GIT_COMMIT_SHA") };
     }
 }

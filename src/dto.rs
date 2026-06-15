@@ -336,6 +336,13 @@ pub struct RangeSystem {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct HealthResponse {
     pub status: String,
+    /// Application version. CI derives this from git tags; local/dev builds
+    /// report the crate placeholder (`0.0.0`).
+    #[schema(example = "1.2.3")]
+    pub app_version: String,
+    /// Git commit the build was cut from; `"unknown"` for local builds.
+    #[schema(example = "abc1234")]
+    pub git_commit: String,
     /// The loaded SDE build number (CCP's `buildNumber`).
     pub sde_version: u64,
     pub systems: usize,

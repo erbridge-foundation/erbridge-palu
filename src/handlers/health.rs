@@ -20,6 +20,8 @@ pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
 
     Json(HealthResponse {
         status: "ok".to_string(),
+        app_version: crate::config::app_version(),
+        git_commit: crate::config::git_commit(),
         sde_version: graph.build_number,
         systems: graph.systems.len(),
         edges: graph.gate_graph.edge_count(),
@@ -58,5 +60,24 @@ mod tests {
         assert_eq!(body.status, "ok");
         assert_eq!(body.sde_version, 7);
         assert_eq!(body.hull_count, 1);
+    }
+
+    #[tokio::test]
+    async fn health_echoes_app_version_and_commit() {
+        let state = AppState::new(Arc::new(build_graph_data(
+            RawSdeData {
+                systems: vec![],
+                gate_pairs: vec![],
+                hulls: RawHullCatalog::default(),
+            },
+            1,
+        )));
+        let Json(body) = health(State(state)).await;
+        // Version + commit come from config (env-var with crate/`unknown`
+        // fallbacks); they are always populated, never empty.
+        assert_eq!(body.app_version, crate::config::app_version());
+        assert_eq!(body.git_commit, crate::config::git_commit());
+        assert!(!body.app_version.is_empty());
+        assert!(!body.git_commit.is_empty());
     }
 }

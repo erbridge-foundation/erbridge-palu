@@ -70,7 +70,7 @@ cache in a named volume. It has no auth — keep it on a trusted network.
 | POST   | `/api/v1/route/system`   | Compute a system-to-system route     |
 | POST   | `/api/v1/route/blops`    | Stage a fleet into bridge range of a cyno target |
 | POST   | `/api/v1/route/range`    | List every system reachable in one jump from a source |
-| GET    | `/health`                | SDE version, graph size, freshness   |
+| GET    | `/health`                | App version, SDE version, graph size, freshness |
 | GET    | `/swagger-ui`            | Interactive API docs                 |
 | GET    | `/api-docs/openapi.json` | OpenAPI 3.1 document                 |
 

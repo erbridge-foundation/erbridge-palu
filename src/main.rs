@@ -22,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
     let cache_dir = resolve_cache_dir().context("resolving SDE cache dir")?;
     let cache = Arc::new(SdeCache::new(cache_dir));
     let client = reqwest::Client::builder()
-        .user_agent(concat!("erbridge-palu/", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("erbridge-palu/{}", config::app_version()))
         .build()
         .context("building HTTP client")?;
 

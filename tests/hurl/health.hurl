@@ -5,6 +5,11 @@ HTTP 200
 [Asserts]
 header "Content-Type" contains "application/json"
 jsonpath "$.status" == "ok"
+# Version + commit are echoed. The HURL server runs with no PALU_APP_VERSION,
+# so it reports the crate placeholder "0.0.0" and commit "unknown" (a CI image
+# would report the git-derived values).
+jsonpath "$.app_version" == "0.0.0"
+jsonpath "$.git_commit" == "unknown"
 jsonpath "$.systems" > 0
 jsonpath "$.edges" > 0
 # The hull catalog loaded from the fixture's type files.

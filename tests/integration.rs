@@ -371,6 +371,11 @@ async fn health_reports_graph_summary_without_auth() {
     let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["status"], "ok");
+    // App version + commit are always present. Under `cargo test` (no
+    // PALU_APP_VERSION) the version is the crate placeholder "0.0.0" and the
+    // commit is "unknown"; in a CI image they are the git-derived values.
+    assert_eq!(body["app_version"], "0.0.0");
+    assert_eq!(body["git_commit"], "unknown");
     // sde_version is the fixture's cached SDE build (whatever metadata.json says).
     assert!(body["sde_version"].as_u64().unwrap() > 0);
     assert!(body["systems"].as_u64().unwrap() > 0);

@@ -24,7 +24,8 @@ RUN touch src/main.rs src/lib.rs && cargo build --release --bin erbridge-palu
 FROM debian:bookworm-slim AS runtime
 
 # Version metadata, passed by CI (the build context has no .git/). Surfaced as
-# OCI image labels.
+# OCI image labels AND as runtime env vars so the binary self-reports the same
+# version (config::app_version reads PALU_APP_VERSION; /health echoes it).
 ARG APP_VERSION=0.0.0-dev
 ARG GIT_COMMIT_SHA=unknown
 LABEL org.opencontainers.image.title="erbridge-palu" \
@@ -32,6 +33,8 @@ LABEL org.opencontainers.image.title="erbridge-palu" \
       org.opencontainers.image.version="${APP_VERSION}" \
       org.opencontainers.image.revision="${GIT_COMMIT_SHA}" \
       org.opencontainers.image.source="https://github.com/erbridge-foundation/erbridge-palu"
+ENV PALU_APP_VERSION="${APP_VERSION}" \
+    PALU_GIT_COMMIT_SHA="${GIT_COMMIT_SHA}"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \

@@ -1,6 +1,9 @@
 [package]
 name = "erbridge-palu"
-version = "0.1.0"
+# Placeholder: the real version is derived from git tags by CI and injected at
+# runtime via PALU_APP_VERSION (see config::app_version). 0.0.0 signals an
+# unversioned local/dev build.
+version = "0.0.0"
 edition = "2024"
 
 [[bin]]
