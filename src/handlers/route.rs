@@ -18,16 +18,25 @@ use crate::services::route::{OverlayInputs, compute_gate_route, resolve_system};
 /// catalog minimum base range over this group, not a hardcoded value.
 pub const BLOPS_GROUP_ID: i64 = 898;
 
-/// Compute a system-to-system route over the SDE gate graph plus the
-/// per-request wormhole overlay.
+/// Compute a fan-out of routes from one shared source over the SDE gate graph
+/// plus the per-request wormhole overlay: a shared header (`from`, preference,
+/// avoid, overlay) plus a `to` list of destinations, returning `{ from, results }`
+/// with one entry per destination in request order.
+///
+/// The failure model mirrors the request's structure. A problem in the shared
+/// header — an unresolvable `from`, an unknown system in `connections[]`/`avoid[]`,
+/// an empty `to[]`, or a `to[]` over the sanity cap — is a request-level `400`,
+/// before any route is computed. A problem with one destination (unknown or
+/// unreachable) is reported in that destination's `results` entry as an
+/// `error`/`message` pair while the request still returns `200`, so one bad hub
+/// never sinks the routes that resolved.
 #[utoipa::path(
     post,
     path = "/api/v1/route/system",
     request_body = GateRouteRequest,
     responses(
-        (status = 200, description = "Route found", body = GateRouteResponse),
-        (status = 400, description = "Unknown system in the request"),
-        (status = 404, description = "No route exists under the given overlay"),
+        (status = 200, description = "Per-destination results (each a route or an in-slot error)", body = GateRouteResponse),
+        (status = 400, description = "Shared-header failure or out-of-bounds to[] (empty / over the 1000 cap)"),
     ),
     tag = "routing",
 )]
@@ -36,6 +45,8 @@ pub async fn route_system(
     Json(req): Json<GateRouteRequest>,
 ) -> Result<Json<GateRouteResponse>, AppError> {
     // Load both snapshots once so the whole computation sees a consistent view.
+    // The shared header (from/avoid/overlay) is resolved once inside the service;
+    // each destination then routes through the same prepared state.
     let graph = state.graph.load();
     let scout = state.eve_scout.load();
     let resp = compute_gate_route(&graph, &scout, &req)?;

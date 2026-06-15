@@ -7,8 +7,10 @@ use utoipa::ToSchema;
 use crate::routing::Preference;
 
 /// A system reference: either a case-insensitive name or a numeric SDE id.
-/// `serde(untagged)` lets clients send either form.
-#[derive(Debug, Clone, Deserialize, ToSchema)]
+/// `serde(untagged)` lets clients send either form. `Serialize` is derived so
+/// the fan-out response can echo each `to` back exactly as sent — a bare string
+/// (original casing) or a bare number — with no wrapper.
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 #[serde(untagged)]
 pub enum SystemRef {
     #[schema(example = "Jita")]
@@ -71,18 +73,30 @@ pub struct WhConnection {
     pub max_size: Option<String>,
 }
 
-/// Request body for `POST /api/v1/route/system`. The schema example shows a
-/// minimal request; optional fields default as documented (notably
-/// `include_zarzakh` defaults to `false`).
+/// The maximum number of destinations a single fan-out request may carry. A
+/// sanity cap against a runaway/accidental request (e.g. `to: [millions]`), not
+/// a workload limit — any legitimate fan-out is far smaller. Abuse/DoS is owned
+/// by edge auth + rate limiting if the service is ever exposed publicly.
+pub const MAX_DESTINATIONS: usize = 1000;
+
+/// Request body for `POST /api/v1/route/system`. A **fan-out**: one shared
+/// header (everything that is the same for every destination — `from`, the
+/// routing policy, and the wormhole overlay) plus a `to` list of destinations.
+/// A single route is just `to: ["X"]`. The schema example shows a minimal
+/// request; optional fields default as documented (notably `include_zarzakh`
+/// defaults to `false`).
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[schema(example = json!({
     "from": "Jita",
-    "to": "Amarr",
+    "to": ["Amarr"],
     "preference": "shortest"
 }))]
 pub struct GateRouteRequest {
     pub from: SystemRef,
-    pub to: SystemRef,
+    /// Destinations to route to from the shared `from`. Non-empty; bounded by a
+    /// sanity cap of `MAX_DESTINATIONS`. Duplicates are permitted and answered
+    /// positionally. One result is returned per destination, in request order.
+    pub to: Vec<SystemRef>,
     #[serde(default = "default_preference")]
     pub preference: RoutePreference,
     /// Systems to exclude from transit. Unknown systems yield a 400; if the
@@ -111,11 +125,45 @@ pub struct GateRouteRequest {
     pub include_zarzakh: bool,
 }
 
-/// Response body for `POST /api/v1/route/system`.
+/// Response body for `POST /api/v1/route/system`: the shared `from` echoed once,
+/// then one result per destination, in request order. The overlay/preference are
+/// deliberately **not** echoed (the client already holds the chain it sent).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GateRouteResponse {
-    pub jumps: usize,
-    pub path: Vec<RouteStep>,
+    /// The shared source, echoed once exactly as supplied in the request.
+    pub from: SystemRef,
+    /// One entry per destination, in request order.
+    pub results: Vec<GateRouteResult>,
+}
+
+/// One destination's outcome in a fan-out response. Always echoes the `to` it
+/// answered (exactly as sent), then flattens either a successful route
+/// (`jumps`/`path`) or a failure (`error`/`message`) — the same code/message a
+/// single-request `4xx` would carry for that `AppError`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GateRouteResult {
+    /// The destination this entry answers, echoed exactly as supplied.
+    pub to: SystemRef,
+    #[serde(flatten)]
+    pub outcome: GateRouteOutcome,
+}
+
+/// A per-destination outcome: a route, or a failure. Untagged so a success
+/// serialises flat as `{ jumps, path }` and a failure as `{ error, message }`,
+/// both alongside the echoed `to`.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum GateRouteOutcome {
+    Route {
+        jumps: usize,
+        path: Vec<RouteStep>,
+    },
+    Failure {
+        /// Stable error code (e.g. `unknown_system`, `unreachable`).
+        error: String,
+        /// Human-readable message for the failure.
+        message: String,
+    },
 }
 
 /// One step in a route: the system reached and how it was reached.
@@ -390,12 +438,100 @@ mod tests {
     #[test]
     fn request_defaults_are_sane() {
         let req: GateRouteRequest =
-            serde_json::from_str(r#"{"from":"Jita","to":"Urlen"}"#).unwrap();
+            serde_json::from_str(r#"{"from":"Jita","to":["Urlen"]}"#).unwrap();
         assert!(matches!(req.preference, RoutePreference::Shortest));
         assert!(req.avoid.is_empty());
         assert!(!req.use_wormholes);
         assert!(req.connections.is_empty());
         assert!(!req.include_thera && !req.include_turnur && !req.include_zarzakh);
+    }
+
+    #[test]
+    fn fanout_request_deserializes_header_plus_to_list() {
+        // The shared header is stated once; `to` is a list of destinations.
+        let req: GateRouteRequest = serde_json::from_str(
+            r#"{"from":"Jita","to":["Amarr","Hek",30000142],"preference":"safest"}"#,
+        )
+        .unwrap();
+        assert!(matches!(req.from, SystemRef::Name(ref n) if n == "Jita"));
+        assert_eq!(req.to.len(), 3);
+        assert!(matches!(req.to[0], SystemRef::Name(ref n) if n == "Amarr"));
+        // Mixed name/id destinations are accepted in one list.
+        assert!(matches!(req.to[2], SystemRef::Id(30000142)));
+        assert!(matches!(req.preference, RoutePreference::Safest));
+    }
+
+    #[test]
+    fn fanout_response_echoes_from_once_with_results() {
+        let resp = GateRouteResponse {
+            from: SystemRef::Name("Jita".into()),
+            results: vec![GateRouteResult {
+                to: SystemRef::Name("Amarr".into()),
+                outcome: GateRouteOutcome::Route {
+                    jumps: 11,
+                    path: vec![],
+                },
+            }],
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        // `from` echoed once at the top level, as a bare string (untagged).
+        assert_eq!(v["from"], "Jita");
+        assert!(
+            v.get("preference").is_none(),
+            "overlay/policy is not echoed back"
+        );
+        assert_eq!(v["results"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn success_entry_serializes_as_route_with_echoed_to() {
+        let entry = GateRouteResult {
+            to: SystemRef::Name("Amarr".into()),
+            outcome: GateRouteOutcome::Route {
+                jumps: 2,
+                path: vec![RouteStep {
+                    system: "Jita".into(),
+                    system_id: 30000142,
+                    security: 0.9,
+                    sec_class: "Highsec".into(),
+                    via: "start".into(),
+                }],
+            },
+        };
+        let v = serde_json::to_value(&entry).unwrap();
+        // Echoed `to` sits flat alongside the flattened route fields.
+        assert_eq!(v["to"], "Amarr");
+        assert_eq!(v["jumps"], 2);
+        assert!(v["path"].is_array());
+        assert!(v.get("error").is_none());
+    }
+
+    #[test]
+    fn failure_entry_serializes_as_error_with_echoed_to() {
+        let entry = GateRouteResult {
+            to: SystemRef::Id(30000142),
+            outcome: GateRouteOutcome::Failure {
+                error: "unreachable".into(),
+                message: "no gate route between the requested systems".into(),
+            },
+        };
+        let v = serde_json::to_value(&entry).unwrap();
+        // A failed destination echoes its `to` as sent (here a bare number) and
+        // carries error/message instead of a route.
+        assert_eq!(v["to"], 30000142);
+        assert_eq!(v["error"], "unreachable");
+        assert!(v["message"].is_string());
+        assert!(v.get("jumps").is_none() && v.get("path").is_none());
+    }
+
+    #[test]
+    fn echoed_to_preserves_as_sent_name_casing_and_id() {
+        // Round-trip a request and a response: the echoed key must preserve the
+        // client's original casing (a name) and bare-number form (an id).
+        let by_name = serde_json::to_value(SystemRef::Name("aMaRr".into())).unwrap();
+        assert_eq!(by_name, "aMaRr");
+        let by_id = serde_json::to_value(SystemRef::Id(30002187)).unwrap();
+        assert_eq!(by_id, 30002187);
     }
 
     #[test]

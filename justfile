@@ -36,6 +36,59 @@ test:
 hurl port="5099":
     tests/hurl/run-hurl.sh {{port}}
 
+# ─── load testing (local only — NEVER in CI) ─────────────────────────────────
+# Drive `oha` against the fixture-booted server with a committed request body.
+# Two bodies, two workloads:
+#   • tests/load/fanout-wh.json  — one source, the 29-edge wormhole chain stated
+#     once, 18 destinations (routes 1..=38 jumps): MANY routes per request, the
+#     fan-out's intended workload.
+#   • tests/load/single-route.json — a one-destination request (Jita→Amarr): ONE
+#     route per request, comparable to the pre-fan-out single-route endpoint.
+# NOT wired into `check`.
+#
+# req/s is not comparable across the two: the fan-out request does 18× the work,
+# so its req/s is ~1/18th while its routes/sec is far higher. Compare routes/sec
+# (req/s × destinations), not req/s, when weighing the two.
+#
+# CAVEAT (hot-graph upper bound): nothing here caches responses — every request
+# re-runs the routing — but replaying one body keeps the CPU data cache and
+# branch predictor warm over the same graph nodes, inflating throughput versus a
+# real many-pilots workload. The diverse destination list mitigates this, so the
+# numbers are a documented hot-graph UPPER BOUND, not a production estimate.
+#
+# `oha` is an opt-in dev tool, not a Cargo.toml dependency: `cargo install oha`.
+
+# Internal: boot the fixture server and fire `oha` at it with the given body.
+# `tui` is "" for the live TUI (foreground, no stdout pipe) or "--no-tui" for a
+# capturable plain-text summary.
+_load-test body tui port requests concurrency:
+    #!/usr/bin/env sh
+    set -e
+    command -v oha >/dev/null 2>&1 || { echo "oha not found — install with: cargo install oha" >&2; exit 1; }
+    # The body runs in the FOREGROUND with the terminal attached so oha's TUI
+    # renders live; boot-server.sh backgrounds only the server.
+    tests/fixtures/boot-server.sh {{port}} \
+        oha {{tui}} -n {{requests}} -c {{concurrency}} -m POST \
+            -H "content-type: application/json" \
+            -D {{body}} \
+            "http://localhost:{{port}}/api/v1/route/system"
+
+# Fan-out load test (18 routes/request), oha live TUI
+load-test port="5098" requests="2000" concurrency="50":
+    @just _load-test tests/load/fanout-wh.json "" {{port}} {{requests}} {{concurrency}}
+
+# Fan-out load test, --no-tui for a capturable plain-text summary
+load-test-plain port="5098" requests="2000" concurrency="50":
+    @just _load-test tests/load/fanout-wh.json --no-tui {{port}} {{requests}} {{concurrency}}
+
+# Single-route load test (1 route/request, comparable to the old endpoint), live TUI
+load-test-single port="5098" requests="20000" concurrency="100":
+    @just _load-test tests/load/single-route.json "" {{port}} {{requests}} {{concurrency}}
+
+# Single-route load test, --no-tui for a capturable plain-text summary
+load-test-single-plain port="5098" requests="2000" concurrency="50":
+    @just _load-test tests/load/single-route.json --no-tui {{port}} {{requests}} {{concurrency}}
+
 # ─── fixtures ────────────────────────────────────────────────────────────────
 
 # Regenerate the committed SDE test fixture from the latest CCP build (maps

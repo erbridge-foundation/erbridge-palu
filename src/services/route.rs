@@ -6,7 +6,10 @@ use chrono::Utc;
 use petgraph::graph::NodeIndex;
 use rustc_hash::FxHashSet;
 
-use crate::dto::{GateRouteRequest, GateRouteResponse, RouteStep, SystemRef};
+use crate::dto::{
+    GateRouteOutcome, GateRouteRequest, GateRouteResponse, GateRouteResult, MAX_DESTINATIONS,
+    RouteStep, SystemRef,
+};
 use crate::error::AppError;
 use crate::eve_scout::{self, EveScoutSnapshot};
 use crate::model::GraphData;
@@ -41,34 +44,147 @@ impl<'a> From<&'a GateRouteRequest> for OverlayInputs<'a> {
     }
 }
 
-/// Compute a gate route for `req` over `graph`, drawing EVE-Scout overlay edges
-/// from `scout`. Pure given its inputs — the handler supplies the per-request
-/// snapshots so this stays testable without HTTP or shared state.
+/// Compute the fan-out for `req` over `graph`, drawing EVE-Scout overlay edges
+/// from `scout`. The shared header (`from`, avoid set, overlay, preference) is
+/// resolved **once**; then each destination in `req.to` is routed through the
+/// same prepared state, collecting `{ from, results }` in request order.
+///
+/// A failure in the shared header (`from`/connection/avoid unresolvable, or
+/// out-of-bounds `to[]`) is returned as `Err` — a request-level error the
+/// handler maps to a `400`. A per-destination failure (unknown or unreachable
+/// destination) is *not* an `Err`: it is carried in that destination's result
+/// slot, so one bad hub never sinks the routes that resolved. Pure given its
+/// inputs — the handler supplies the per-request snapshots so this stays
+/// testable without HTTP or shared state.
 pub fn compute_gate_route(
     graph: &GraphData,
     scout: &EveScoutSnapshot,
     req: &GateRouteRequest,
 ) -> Result<GateRouteResponse, AppError> {
-    let preference: Preference = req.preference.into();
+    // ── request-level (header/bounds) tier ───────────────────────────────────
+    if req.to.is_empty() {
+        return Err(AppError::InvalidParam(
+            "to[] must contain at least one destination".to_string(),
+        ));
+    }
+    if req.to.len() > MAX_DESTINATIONS {
+        return Err(AppError::InvalidParam(format!(
+            "to[] has {} destinations; the maximum is {MAX_DESTINATIONS}",
+            req.to.len()
+        )));
+    }
 
+    let preference: Preference = req.preference.into();
     let from = resolve_system(graph, &req.from)?;
-    let to = resolve_system(graph, &req.to)?;
 
     let inputs = OverlayInputs::from(req);
-    let mut avoid = assemble_avoid_set(graph, &inputs)?;
-    // The avoid set is about *transit*: the route's own endpoints are never
-    // transit hops, so a system is usable as `from`/`to` even when it would
-    // otherwise be excluded (e.g. Zarzakh by default, or a user-avoided system).
-    avoid.remove(&from);
+    // The avoid set is about *transit*: the route's endpoints are never transit
+    // hops, so a system is usable as `from`/`to` even when otherwise excluded
+    // (e.g. Zarzakh by default, or a user-avoided system). `from` is shared, so
+    // remove it once here; each destination is removed per-iteration below.
+    let mut shared_avoid = assemble_avoid_set(graph, &inputs)?;
+    shared_avoid.remove(&from);
+
+    // The user wormhole connections are part of the *shared* header, so an
+    // unknown connection system is a request-level error — resolved (and
+    // validated) once here, not folded into a per-destination slot. EVE-Scout
+    // sigs are added per destination (their inclusion depends on the endpoint
+    // set) and silently skip unknowns, so they never fail the request.
+    let connections = resolve_connections(graph, &inputs)?;
+
+    // ── per-destination tier ──────────────────────────────────────────────────
+    // Each destination resolves and routes against the prepared shared state;
+    // its failures stay local to its result slot.
+    let results = req
+        .to
+        .iter()
+        .map(|to_ref| {
+            let outcome = compute_one(
+                graph,
+                scout,
+                &inputs,
+                preference,
+                &shared_avoid,
+                &connections,
+                from,
+                to_ref,
+            )
+            .unwrap_or_else(|e| {
+                let (code, message) = e.code_message();
+                GateRouteOutcome::Failure {
+                    error: code.to_string(),
+                    message,
+                }
+            });
+            GateRouteResult {
+                to: to_ref.clone(),
+                outcome,
+            }
+        })
+        .collect();
+
+    Ok(GateRouteResponse {
+        from: req.from.clone(),
+        results,
+    })
+}
+
+/// Resolve the shared user wormhole connections to node-index pairs once, so an
+/// unknown connection system surfaces as a request-level error rather than being
+/// charged to one destination. Empty when `use_wormholes` is off.
+fn resolve_connections(
+    graph: &GraphData,
+    inputs: &OverlayInputs<'_>,
+) -> Result<Vec<(NodeIndex, NodeIndex)>, AppError> {
+    if !inputs.use_wormholes {
+        return Ok(Vec::new());
+    }
+    inputs
+        .connections
+        .iter()
+        .map(|c| {
+            let a = resolve_system(graph, &c.from)?;
+            let b = resolve_system(graph, &c.to)?;
+            Ok((a, b))
+        })
+        .collect()
+}
+
+/// Route the shared `from` to one destination `to_ref` against the prepared
+/// shared overlay/avoid/preference. Returns the route outcome on success, or an
+/// `AppError` (unknown/unreachable destination) the caller folds into that
+/// destination's result slot.
+#[allow(clippy::too_many_arguments)]
+fn compute_one(
+    graph: &GraphData,
+    scout: &EveScoutSnapshot,
+    inputs: &OverlayInputs<'_>,
+    preference: Preference,
+    shared_avoid: &FxHashSet<NodeIndex>,
+    connections: &[(NodeIndex, NodeIndex)],
+    from: NodeIndex,
+    to_ref: &SystemRef,
+) -> Result<GateRouteOutcome, AppError> {
+    let to = resolve_system(graph, to_ref)?;
+
+    // Start from the shared avoid set and exempt this destination as an endpoint.
+    let mut avoid = shared_avoid.clone();
     avoid.remove(&to);
     let mut ctx = RouteContext::new(graph, avoid, preference);
 
-    apply_overlay(graph, scout, &inputs, &[from, to], &mut ctx)?;
+    // Pre-resolved shared connections, then the endpoint-dependent scout edges.
+    for &(a, b) in connections {
+        ctx.add_connection(a, b);
+    }
+    apply_scout_overlay(graph, scout, inputs, &[from, to], &mut ctx);
 
     let path = with_scratch(|scratch| shortest_path(&ctx, from, to, scratch))
         .ok_or(AppError::Unreachable)?;
 
-    Ok(build_response(graph, &ctx, &path))
+    let steps = build_steps(graph, &ctx, &path);
+    // jumps = edges traversed = path.len() - 1 (0 for a same-system route).
+    let jumps = path.len().saturating_sub(1);
+    Ok(GateRouteOutcome::Route { jumps, path: steps })
 }
 
 /// User `avoid[]` ∪ Zarzakh (unless `include_zarzakh`). Zarzakh is added only
@@ -115,7 +231,24 @@ pub fn apply_overlay(
             ctx.add_connection(a, b);
         }
     }
+    apply_scout_overlay(graph, scout, inputs, endpoints, ctx);
+    Ok(())
+}
 
+/// Add just the EVE-Scout Thera/Turnur signature edges to the overlay (the
+/// endpoint-dependent half of `apply_overlay`). Split out so the system-route
+/// fan-out can resolve the user `connections[]` once at the header tier — where
+/// an unknown connection is a request-level error — while still applying the
+/// scout edges per destination, whose inclusion depends on that destination's
+/// endpoint set. Infallible: unknown systems and stale sigs are silently
+/// skipped (see `add_scout_edges`), so this never fails the request.
+pub fn apply_scout_overlay(
+    graph: &GraphData,
+    scout: &EveScoutSnapshot,
+    inputs: &OverlayInputs<'_>,
+    endpoints: &[NodeIndex],
+    ctx: &mut RouteContext<'_>,
+) {
     let now = Utc::now();
     let is_endpoint = |hub_id: i64| {
         graph
@@ -129,7 +262,6 @@ pub fn apply_overlay(
     if inputs.include_turnur || is_endpoint(eve_scout::TURNUR_SYSTEM_ID) {
         add_scout_edges(graph, ctx, &scout.turnur, now);
     }
-    Ok(())
 }
 
 /// Add live signatures as overlay edges. Unknown systems and expired sigs are
@@ -194,13 +326,6 @@ pub fn build_steps(graph: &GraphData, ctx: &RouteContext<'_>, path: &Path) -> Ve
         .collect()
 }
 
-fn build_response(graph: &GraphData, ctx: &RouteContext<'_>, path: &Path) -> GateRouteResponse {
-    let steps = build_steps(graph, ctx, path);
-    // jumps = edges traversed = path.len() - 1 (0 for a same-system route).
-    let jumps = path.len().saturating_sub(1);
-    GateRouteResponse { jumps, path: steps }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,7 +370,7 @@ mod tests {
     fn req(from: &str, to: &str) -> GateRouteRequest {
         GateRouteRequest {
             from: SystemRef::Name(from.into()),
-            to: SystemRef::Name(to.into()),
+            to: vec![SystemRef::Name(to.into())],
             preference: RoutePreference::Shortest,
             avoid: vec![],
             use_wormholes: false,
@@ -256,6 +381,35 @@ mod tests {
         }
     }
 
+    /// Extract the single route outcome from a one-destination fan-out, or panic
+    /// with the in-slot failure — most legacy single-route tests expect a route.
+    fn one_route(resp: &GateRouteResponse) -> (usize, &[RouteStep]) {
+        assert_eq!(
+            resp.results.len(),
+            1,
+            "expected a single-destination fan-out"
+        );
+        match &resp.results[0].outcome {
+            GateRouteOutcome::Route { jumps, path } => (*jumps, path),
+            GateRouteOutcome::Failure { error, message } => {
+                panic!("expected a route, got failure {error}: {message}")
+            }
+        }
+    }
+
+    /// Extract the single in-slot failure code from a one-destination fan-out.
+    fn one_failure(resp: &GateRouteResponse) -> &str {
+        assert_eq!(
+            resp.results.len(),
+            1,
+            "expected a single-destination fan-out"
+        );
+        match &resp.results[0].outcome {
+            GateRouteOutcome::Failure { error, .. } => error,
+            GateRouteOutcome::Route { .. } => panic!("expected a failure, got a route"),
+        }
+    }
+
     #[test]
     fn resolvable_route_by_name() {
         let gd = zarzakh_graph();
@@ -263,14 +417,17 @@ mod tests {
         let mut r = req("G", "H");
         r.include_zarzakh = true;
         let resp = compute_gate_route(&gd, &scout, &r).unwrap();
-        assert_eq!(resp.jumps, 2);
-        assert_eq!(resp.path[0].via, "start");
-        assert_eq!(resp.path[1].via, "stargate");
-        assert_eq!(resp.path[1].system, "Zarzakh");
+        let (jumps, path) = one_route(&resp);
+        assert_eq!(jumps, 2);
+        assert_eq!(path[0].via, "start");
+        assert_eq!(path[1].via, "stargate");
+        assert_eq!(path[1].system, "Zarzakh");
     }
 
     #[test]
-    fn unknown_system_errors() {
+    fn unknown_source_is_request_level_error() {
+        // A bad *shared* `from` is a header-tier failure: the whole request errs
+        // (handler → 400), it is not folded into a per-destination slot.
         let gd = zarzakh_graph();
         let scout = EveScoutSnapshot::default();
         let err = compute_gate_route(&gd, &scout, &req("Nowhere", "H")).unwrap_err();
@@ -278,20 +435,31 @@ mod tests {
     }
 
     #[test]
-    fn unreachable_errors() {
+    fn unknown_destination_is_in_slot_failure() {
+        // A bad *destination* stays local to its slot — the request still
+        // succeeds (would be a 200 at the handler).
         let gd = zarzakh_graph();
         let scout = EveScoutSnapshot::default();
-        let err = compute_gate_route(&gd, &scout, &req("Jita", "H")).unwrap_err();
-        assert!(matches!(err, AppError::Unreachable));
+        let resp = compute_gate_route(&gd, &scout, &req("H", "Nowhere")).unwrap();
+        assert_eq!(one_failure(&resp), "unknown_system");
+    }
+
+    #[test]
+    fn unreachable_destination_is_in_slot_failure() {
+        let gd = zarzakh_graph();
+        let scout = EveScoutSnapshot::default();
+        let resp = compute_gate_route(&gd, &scout, &req("Jita", "H")).unwrap();
+        assert_eq!(one_failure(&resp), "unreachable");
     }
 
     #[test]
     fn zarzakh_excluded_by_default() {
-        // G→H only routes via Zarzakh; default excludes it → unreachable.
+        // G→H only routes via Zarzakh; default excludes it → unreachable, carried
+        // in the destination's slot.
         let gd = zarzakh_graph();
         let scout = EveScoutSnapshot::default();
-        let err = compute_gate_route(&gd, &scout, &req("G", "H")).unwrap_err();
-        assert!(matches!(err, AppError::Unreachable));
+        let resp = compute_gate_route(&gd, &scout, &req("G", "H")).unwrap();
+        assert_eq!(one_failure(&resp), "unreachable");
     }
 
     #[test]
@@ -301,7 +469,8 @@ mod tests {
         let mut r = req("G", "H");
         r.include_zarzakh = true;
         let resp = compute_gate_route(&gd, &scout, &r).unwrap();
-        assert!(resp.path.iter().any(|s| s.system == "Zarzakh"));
+        let (_, path) = one_route(&resp);
+        assert!(path.iter().any(|s| s.system == "Zarzakh"));
     }
 
     #[test]
@@ -311,8 +480,9 @@ mod tests {
         let gd = zarzakh_graph();
         let scout = EveScoutSnapshot::default();
         let resp = compute_gate_route(&gd, &scout, &req("G", "Zarzakh")).unwrap();
-        assert_eq!(resp.jumps, 1);
-        assert_eq!(resp.path.last().unwrap().system, "Zarzakh");
+        let (jumps, path) = one_route(&resp);
+        assert_eq!(jumps, 1);
+        assert_eq!(path.last().unwrap().system, "Zarzakh");
     }
 
     #[test]
@@ -320,8 +490,9 @@ mod tests {
         let gd = zarzakh_graph();
         let scout = EveScoutSnapshot::default();
         let resp = compute_gate_route(&gd, &scout, &req("Zarzakh", "H")).unwrap();
-        assert_eq!(resp.jumps, 1);
-        assert_eq!(resp.path[0].system, "Zarzakh");
+        let (jumps, path) = one_route(&resp);
+        assert_eq!(jumps, 1);
+        assert_eq!(path[0].system, "Zarzakh");
     }
 
     #[test]
@@ -330,8 +501,8 @@ mod tests {
         // G→H (Zarzakh the only bridge) is unreachable by default.
         let gd = zarzakh_graph();
         let scout = EveScoutSnapshot::default();
-        let err = compute_gate_route(&gd, &scout, &req("G", "H")).unwrap_err();
-        assert!(matches!(err, AppError::Unreachable));
+        let resp = compute_gate_route(&gd, &scout, &req("G", "H")).unwrap();
+        assert_eq!(one_failure(&resp), "unreachable");
     }
 
     #[test]
@@ -342,8 +513,8 @@ mod tests {
         r.include_zarzakh = true;
         r.avoid = vec![SystemRef::Name("Zarzakh".into())];
         // Avoiding the only bridge → unreachable even with include_zarzakh.
-        let err = compute_gate_route(&gd, &scout, &r).unwrap_err();
-        assert!(matches!(err, AppError::Unreachable));
+        let resp = compute_gate_route(&gd, &scout, &r).unwrap();
+        assert_eq!(one_failure(&resp), "unreachable");
     }
 
     #[test]
@@ -356,7 +527,8 @@ mod tests {
         r.include_zarzakh = true;
         r.avoid = vec![SystemRef::Name("Zarzakh".into())];
         let resp = compute_gate_route(&gd, &scout, &r).unwrap();
-        assert_eq!(resp.path.last().unwrap().system, "Zarzakh");
+        let (_, path) = one_route(&resp);
+        assert_eq!(path.last().unwrap().system, "Zarzakh");
     }
 
     #[test]
@@ -371,8 +543,9 @@ mod tests {
             max_size: Some("large".into()),
         }];
         let resp = compute_gate_route(&gd, &scout, &r).unwrap();
-        assert_eq!(resp.jumps, 1);
-        assert_eq!(resp.path[1].via, "wormhole");
+        let (jumps, path) = one_route(&resp);
+        assert_eq!(jumps, 1);
+        assert_eq!(path[1].via, "wormhole");
     }
 
     #[test]
@@ -386,11 +559,9 @@ mod tests {
             to: SystemRef::Name("G".into()),
             max_size: None,
         }];
-        // Without use_wormholes the edge is not added → still unreachable.
-        assert!(matches!(
-            compute_gate_route(&gd, &scout, &r).unwrap_err(),
-            AppError::Unreachable
-        ));
+        // Without use_wormholes the edge is not added → still unreachable (in slot).
+        let resp = compute_gate_route(&gd, &scout, &r).unwrap();
+        assert_eq!(one_failure(&resp), "unreachable");
     }
 
     #[test]
@@ -444,9 +615,10 @@ mod tests {
         r.include_thera = true;
         r.include_zarzakh = true;
         let resp = compute_gate_route(&gd, &scout, &r).unwrap();
+        let (_, path) = one_route(&resp);
         // Thera→G via wormhole, then G→Zarzakh→H via gates.
-        assert_eq!(resp.path[1].via, "wormhole");
-        assert_eq!(resp.path[1].system, "G");
+        assert_eq!(path[1].via, "wormhole");
+        assert_eq!(path[1].system, "G");
     }
 
     #[test]
@@ -471,10 +643,9 @@ mod tests {
         };
         let mut r = req("Thera", "G");
         r.include_thera = true;
-        assert!(matches!(
-            compute_gate_route(&gd, &scout, &r).unwrap_err(),
-            AppError::Unreachable
-        ));
+        // The destination is unreachable once the stale sig is dropped → in slot.
+        let resp = compute_gate_route(&gd, &scout, &r).unwrap();
+        assert_eq!(one_failure(&resp), "unreachable");
     }
 
     /// Thera (gateless WH) and Turnur (k-space) plus two K-space systems.
@@ -507,9 +678,10 @@ mod tests {
         let r = req("G", "Thera"); // include_thera defaults to false
         assert!(!r.include_thera);
         let resp = compute_gate_route(&gd, &scout, &r).unwrap();
-        assert_eq!(resp.jumps, 1);
-        assert_eq!(resp.path.last().unwrap().system, "Thera");
-        assert_eq!(resp.path.last().unwrap().via, "wormhole");
+        let (jumps, path) = one_route(&resp);
+        assert_eq!(jumps, 1);
+        assert_eq!(path.last().unwrap().system, "Thera");
+        assert_eq!(path.last().unwrap().via, "wormhole");
     }
 
     #[test]
@@ -517,8 +689,9 @@ mod tests {
         let (gd, scout) = scout_hub_graph();
         let r = req("Thera", "G");
         let resp = compute_gate_route(&gd, &scout, &r).unwrap();
-        assert_eq!(resp.jumps, 1);
-        assert_eq!(resp.path[0].system, "Thera");
+        let (jumps, path) = one_route(&resp);
+        assert_eq!(jumps, 1);
+        assert_eq!(path[0].system, "Thera");
     }
 
     #[test]
@@ -528,8 +701,9 @@ mod tests {
         let (gd, scout) = scout_hub_graph();
         let r = req("H", "Turnur");
         let resp = compute_gate_route(&gd, &scout, &r).unwrap();
-        assert_eq!(resp.path.last().unwrap().system, "Turnur");
-        assert_eq!(resp.path.last().unwrap().via, "wormhole");
+        let (_, path) = one_route(&resp);
+        assert_eq!(path.last().unwrap().system, "Turnur");
+        assert_eq!(path.last().unwrap().via, "wormhole");
     }
 
     #[test]
@@ -539,8 +713,9 @@ mod tests {
         // use the gate (1 jump), never detour through Thera.
         let (gd, scout) = scout_hub_graph();
         let resp = compute_gate_route(&gd, &scout, &req("G", "H")).unwrap();
-        assert_eq!(resp.jumps, 1);
-        assert!(!resp.path.iter().any(|s| s.system == "Thera"));
+        let (jumps, path) = one_route(&resp);
+        assert_eq!(jumps, 1);
+        assert!(!path.iter().any(|s| s.system == "Thera"));
     }
 
     #[test]
@@ -548,7 +723,169 @@ mod tests {
         let gd = zarzakh_graph();
         let scout = EveScoutSnapshot::default();
         let resp = compute_gate_route(&gd, &scout, &req("Jita", "Jita")).unwrap();
-        assert_eq!(resp.jumps, 0);
-        assert_eq!(resp.path.len(), 1);
+        let (jumps, path) = one_route(&resp);
+        assert_eq!(jumps, 0);
+        assert_eq!(path.len(), 1);
+    }
+
+    // ── fan-out ───────────────────────────────────────────────────────────────
+
+    /// Build a fan-out request with a shared `from` and several destinations.
+    fn fanout(from: &str, to: &[&str]) -> GateRouteRequest {
+        GateRouteRequest {
+            to: to.iter().map(|t| SystemRef::Name((*t).into())).collect(),
+            ..req(from, "unused")
+        }
+    }
+
+    #[test]
+    fn fanout_echoes_from_and_answers_in_request_order() {
+        let gd = zarzakh_graph();
+        let scout = EveScoutSnapshot::default();
+        let mut r = fanout("G", &["Zarzakh", "G"]);
+        r.include_zarzakh = true;
+        let resp = compute_gate_route(&gd, &scout, &r).unwrap();
+        // `from` echoed once, as sent.
+        assert!(matches!(&resp.from, SystemRef::Name(n) if n == "G"));
+        // One entry per destination, in request order, each echoing its `to`.
+        assert_eq!(resp.results.len(), 2);
+        assert!(matches!(&resp.results[0].to, SystemRef::Name(n) if n == "Zarzakh"));
+        assert!(matches!(&resp.results[1].to, SystemRef::Name(n) if n == "G"));
+        // G→Zarzakh is 1 jump; G→G is 0.
+        assert!(matches!(
+            resp.results[0].outcome,
+            GateRouteOutcome::Route { jumps: 1, .. }
+        ));
+        assert!(matches!(
+            resp.results[1].outcome,
+            GateRouteOutcome::Route { jumps: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn fanout_mixes_success_and_per_destination_failure() {
+        // A good destination, an unknown one, and an unreachable one — all in one
+        // request that still succeeds; the failures stay in their own slots.
+        let gd = zarzakh_graph();
+        let scout = EveScoutSnapshot::default();
+        let mut r = fanout("G", &["Zarzakh", "Nowhere", "Jita"]);
+        r.include_zarzakh = true;
+        let resp = compute_gate_route(&gd, &scout, &r).unwrap();
+        assert_eq!(resp.results.len(), 3);
+        assert!(matches!(
+            resp.results[0].outcome,
+            GateRouteOutcome::Route { .. }
+        ));
+        assert!(matches!(
+            &resp.results[1].outcome,
+            GateRouteOutcome::Failure { error, .. } if error == "unknown_system"
+        ));
+        assert!(matches!(
+            &resp.results[2].outcome,
+            GateRouteOutcome::Failure { error, .. } if error == "unreachable"
+        ));
+        // The unknown destination still echoes its `to` as sent.
+        assert!(matches!(&resp.results[1].to, SystemRef::Name(n) if n == "Nowhere"));
+    }
+
+    #[test]
+    fn fanout_empty_to_is_request_level_error() {
+        let gd = zarzakh_graph();
+        let scout = EveScoutSnapshot::default();
+        let err = compute_gate_route(&gd, &scout, &fanout("G", &[])).unwrap_err();
+        assert!(matches!(err, AppError::InvalidParam(_)));
+    }
+
+    #[test]
+    fn fanout_over_cap_is_request_level_error() {
+        let gd = zarzakh_graph();
+        let scout = EveScoutSnapshot::default();
+        let mut r = req("G", "Zarzakh");
+        r.to = vec![SystemRef::Name("Zarzakh".into()); MAX_DESTINATIONS + 1];
+        let err = compute_gate_route(&gd, &scout, &r).unwrap_err();
+        assert!(matches!(err, AppError::InvalidParam(_)));
+    }
+
+    #[test]
+    fn fanout_at_cap_is_accepted() {
+        // Exactly MAX_DESTINATIONS is within bounds (the cap rejects only `>`).
+        let gd = zarzakh_graph();
+        let scout = EveScoutSnapshot::default();
+        let mut r = req("G", "Zarzakh");
+        r.include_zarzakh = true;
+        r.to = vec![SystemRef::Name("Zarzakh".into()); MAX_DESTINATIONS];
+        let resp = compute_gate_route(&gd, &scout, &r).unwrap();
+        assert_eq!(resp.results.len(), MAX_DESTINATIONS);
+    }
+
+    #[test]
+    fn fanout_bad_connection_is_request_level_error() {
+        // A user connection is part of the *shared* overlay, so an unknown
+        // connection system fails the whole request (header tier), not one slot —
+        // even though every destination is individually valid.
+        let gd = zarzakh_graph();
+        let scout = EveScoutSnapshot::default();
+        let mut r = fanout("Jita", &["G", "Zarzakh"]);
+        r.use_wormholes = true;
+        r.connections = vec![WhConnection {
+            from: SystemRef::Name("Jita".into()),
+            to: SystemRef::Name("Nowhere".into()),
+            max_size: None,
+        }];
+        let err = compute_gate_route(&gd, &scout, &r).unwrap_err();
+        assert!(matches!(err, AppError::UnknownSystem(s) if s == "Nowhere"));
+    }
+
+    #[test]
+    fn fanout_bad_from_fails_whole_request_before_any_route() {
+        // A bad shared `from` is a header-tier failure even though every `to`
+        // is individually fine: the request errs rather than reporting per-slot.
+        let gd = zarzakh_graph();
+        let scout = EveScoutSnapshot::default();
+        let r = fanout("Nowhere", &["G", "H", "Zarzakh"]);
+        let err = compute_gate_route(&gd, &scout, &r).unwrap_err();
+        assert!(matches!(err, AppError::UnknownSystem(s) if s == "Nowhere"));
+    }
+
+    #[test]
+    fn fanout_duplicate_destinations_answered_positionally() {
+        let gd = zarzakh_graph();
+        let scout = EveScoutSnapshot::default();
+        let mut r = fanout("G", &["Zarzakh", "Zarzakh"]);
+        r.include_zarzakh = true;
+        let resp = compute_gate_route(&gd, &scout, &r).unwrap();
+        assert_eq!(resp.results.len(), 2);
+        assert!(matches!(
+            resp.results[0].outcome,
+            GateRouteOutcome::Route { jumps: 1, .. }
+        ));
+        assert!(matches!(
+            resp.results[1].outcome,
+            GateRouteOutcome::Route { jumps: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn fanout_per_destination_avoid_exemption_is_independent() {
+        // The endpoint avoid-exemption is per-destination: avoiding Zarzakh makes
+        // G→H unreachable (the only bridge), yet G→Zarzakh still resolves because
+        // Zarzakh is exempt *as that entry's destination*. One shared avoid set
+        // must not let one destination's exemption leak into another's.
+        let gd = zarzakh_graph();
+        let scout = EveScoutSnapshot::default();
+        let mut r = fanout("G", &["Zarzakh", "H"]);
+        r.include_zarzakh = true;
+        r.avoid = vec![SystemRef::Name("Zarzakh".into())];
+        let resp = compute_gate_route(&gd, &scout, &r).unwrap();
+        // Zarzakh as a destination: exempt → resolves.
+        assert!(matches!(
+            resp.results[0].outcome,
+            GateRouteOutcome::Route { jumps: 1, .. }
+        ));
+        // H via Zarzakh transit: Zarzakh avoided → unreachable, in its own slot.
+        assert!(matches!(
+            &resp.results[1].outcome,
+            GateRouteOutcome::Failure { error, .. } if error == "unreachable"
+        ));
     }
 }

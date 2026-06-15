@@ -1,0 +1,143 @@
+{
+  "from": "J120455",
+  "to": [
+    "J131142",
+    "Amoderia",
+    "Lashkai",
+    "Orduin",
+    "J133525",
+    "J172840",
+    "Adar",
+    "Martha",
+    "Jita",
+    "Amarr",
+    "Hek",
+    "Dodixie",
+    "Rens",
+    "Tama",
+    "Rancer",
+    "EC-P8R",
+    "319-3D",
+    "Y-2ANO"
+  ],
+  "preference": "shortest",
+  "use_wormholes": true,
+  "connections": [
+    {
+      "from": "J120455",
+      "to": "Lashkai"
+    },
+    {
+      "from": "J120455",
+      "to": "Orduin"
+    },
+    {
+      "from": "J120455",
+      "to": "DDI-B7"
+    },
+    {
+      "from": "J120455",
+      "to": "J131142"
+    },
+    {
+      "from": "J131142",
+      "to": "Amoderia"
+    },
+    {
+      "from": "J131142",
+      "to": "HL-VZX"
+    },
+    {
+      "from": "J131142",
+      "to": "J133011"
+    },
+    {
+      "from": "J133011",
+      "to": "J133525"
+    },
+    {
+      "from": "J133011",
+      "to": "J151319"
+    },
+    {
+      "from": "J172840",
+      "to": "J213956"
+    },
+    {
+      "from": "J172840",
+      "to": "O-TVTD"
+    },
+    {
+      "from": "J213956",
+      "to": "J113453"
+    },
+    {
+      "from": "J213956",
+      "to": "J161411"
+    },
+    {
+      "from": "J113453",
+      "to": "J162132"
+    },
+    {
+      "from": "J162132",
+      "to": "J112241"
+    },
+    {
+      "from": "J113453",
+      "to": "QPTT-F"
+    },
+    {
+      "from": "J113453",
+      "to": "AU2V-J"
+    },
+    {
+      "from": "J161411",
+      "to": "J145155"
+    },
+    {
+      "from": "J161411",
+      "to": "J131204"
+    },
+    {
+      "from": "J161411",
+      "to": "J122832"
+    },
+    {
+      "from": "J145155",
+      "to": "J131852"
+    },
+    {
+      "from": "J145155",
+      "to": "Atai"
+    },
+    {
+      "from": "J145155",
+      "to": "J140810"
+    },
+    {
+      "from": "J145155",
+      "to": "Iosantin"
+    },
+    {
+      "from": "J145155",
+      "to": "J105415"
+    },
+    {
+      "from": "J131204",
+      "to": "J222104"
+    },
+    {
+      "from": "J131204",
+      "to": "Martha"
+    },
+    {
+      "from": "J122832",
+      "to": "J113925"
+    },
+    {
+      "from": "J122832",
+      "to": "Adar"
+    }
+  ]
+}

@@ -35,7 +35,7 @@ fn fixture_state() -> AppState {
     AppState::new(Arc::new(graph))
 }
 
-async fn post_route(state: AppState, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+async fn post_fanout(state: AppState, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
     let app = build_router(state);
     let req = Request::builder()
         .uri("/api/v1/route/system")
@@ -52,6 +52,27 @@ async fn post_route(state: AppState, body: serde_json::Value) -> (StatusCode, se
         serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
     };
     (status, json)
+}
+
+/// Post a single-destination fan-out (`to: [dest]`, every other field shared) and
+/// return `(status, results[0])` — the per-destination entry. Most legacy
+/// single-route tests assert against one destination, so this keeps them concise
+/// while exercising the real `{ from, results }` envelope.
+async fn post_route(
+    state: AppState,
+    mut body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    // Wrap the scalar `to` the legacy tests pass into the fan-out list shape.
+    if let Some(to) = body.get("to").cloned() {
+        body["to"] = serde_json::Value::Array(vec![to]);
+    }
+    let (status, full) = post_fanout(state, body).await;
+    if status != StatusCode::OK {
+        // A request-level error has no `results`; surface the error body as-is.
+        return (status, full);
+    }
+    let entry = full["results"][0].clone();
+    (status, entry)
 }
 
 // ── basic routing ────────────────────────────────────────────────────────────
@@ -230,15 +251,20 @@ async fn unknown_system_is_400() {
 }
 
 #[tokio::test]
-async fn unreachable_is_404() {
+async fn unreachable_destination_is_in_slot_failure_at_200() {
     // J105443 is a gateless wormhole system with no overlay edge → unreachable.
-    let (status, body) = post_route(
+    // A destination failure no longer fails the request: the fan-out returns 200
+    // with the error carried in that destination's slot (still echoing its `to`).
+    let (status, entry) = post_route(
         fixture_state(),
         serde_json::json!({ "from": "Jita", "to": "J105443" }),
     )
     .await;
-    assert_eq!(status, 404, "body={body}");
-    assert_eq!(body["error"], "unreachable");
+    assert_eq!(status, 200, "entry={entry}");
+    assert_eq!(entry["error"], "unreachable");
+    assert!(entry["message"].is_string());
+    assert_eq!(entry["to"], "J105443");
+    assert!(entry.get("jumps").is_none());
 }
 
 #[tokio::test]
@@ -251,6 +277,91 @@ async fn accepts_numeric_system_id() {
     .await;
     assert_eq!(status, 200, "body={body}");
     assert_eq!(body["jumps"], 1);
+}
+
+// ── fan-out (shared header + many destinations) ───────────────────────────────────
+
+#[tokio::test]
+async fn fanout_echoes_from_and_answers_in_request_order() {
+    // One shared header, three resolvable destinations: the response echoes
+    // `from` once and returns one route per destination, in request order.
+    let (status, body) = post_fanout(
+        fixture_state(),
+        serde_json::json!({ "from": "Jita", "to": ["Amarr", "Perimeter", "Amarr"] }),
+    )
+    .await;
+    assert_eq!(status, 200, "body={body}");
+    assert_eq!(body["from"], "Jita");
+    let results = body["results"].as_array().unwrap();
+    assert_eq!(results.len(), 3);
+    // Each entry echoes its `to`, in order (duplicates answered positionally).
+    assert_eq!(results[0]["to"], "Amarr");
+    assert_eq!(results[1]["to"], "Perimeter");
+    assert_eq!(results[2]["to"], "Amarr");
+    // Jita→Amarr is 11; Jita→Perimeter is 1; the duplicate Amarr matches the first.
+    assert_eq!(results[0]["jumps"], 11);
+    assert_eq!(results[1]["jumps"], 1);
+    assert_eq!(results[2]["jumps"], 11);
+}
+
+#[tokio::test]
+async fn fanout_mixes_routes_and_per_destination_failures_at_200() {
+    // Good + unknown + unreachable destinations in one request: still 200, with
+    // failures isolated to their slots and the good route intact.
+    let (status, body) = post_fanout(
+        fixture_state(),
+        serde_json::json!({ "from": "Jita", "to": ["Amarr", "Nowhere", "J105443"] }),
+    )
+    .await;
+    assert_eq!(status, 200, "body={body}");
+    let results = body["results"].as_array().unwrap();
+    assert_eq!(results.len(), 3);
+    // Good destination: a route.
+    assert_eq!(results[0]["jumps"], 11);
+    // Unknown destination: in-slot unknown_system, echoing its `to`.
+    assert_eq!(results[1]["error"], "unknown_system");
+    assert_eq!(results[1]["to"], "Nowhere");
+    // Unreachable destination: in-slot unreachable.
+    assert_eq!(results[2]["error"], "unreachable");
+    assert_eq!(results[2]["to"], "J105443");
+}
+
+#[tokio::test]
+async fn fanout_bad_shared_from_is_request_level_400() {
+    // A bad shared `from` fails the whole request (header tier) even though the
+    // destinations are individually valid — no `results` are computed.
+    let (status, body) = post_fanout(
+        fixture_state(),
+        serde_json::json!({ "from": "Nowhere", "to": ["Jita", "Amarr"] }),
+    )
+    .await;
+    assert_eq!(status, 400, "body={body}");
+    assert_eq!(body["error"], "unknown_system");
+    assert!(body.get("results").is_none());
+}
+
+#[tokio::test]
+async fn fanout_empty_to_is_request_level_400() {
+    let (status, body) = post_fanout(
+        fixture_state(),
+        serde_json::json!({ "from": "Jita", "to": [] }),
+    )
+    .await;
+    assert_eq!(status, 400, "body={body}");
+    assert_eq!(body["error"], "invalid_param");
+}
+
+#[tokio::test]
+async fn fanout_over_cap_to_is_request_level_400() {
+    // 1001 destinations exceeds the sanity cap of 1000 → request-level 400.
+    let over_cap: Vec<&str> = std::iter::repeat_n("Jita", 1001).collect();
+    let (status, body) = post_fanout(
+        fixture_state(),
+        serde_json::json!({ "from": "Jita", "to": over_cap }),
+    )
+    .await;
+    assert_eq!(status, 400, "body={body}");
+    assert_eq!(body["error"], "invalid_param");
 }
 
 // ── EVE-Scout overlay (snapshot injected, no network) ─────────────────────────────

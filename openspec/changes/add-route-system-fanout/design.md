@@ -130,6 +130,12 @@ documented **hot-graph upper bound**, not a production estimate.
   flattened untagged outcome with an echoed `to`; utoipa renders this as a `oneOf`
   (verified on the abandoned batch). A concrete type alias works around the path
   macro's inability to parse a nested generic in `body =`.
+  **As built (verified):** `GateRouteResult` derives `ToSchema` and renders as an
+  `allOf` of the untagged `GateRouteOutcome` (itself a clean `oneOf` of the
+  `Route`/`Failure` variants) plus the `{ to }` object — exactly the predicted
+  shape. No type alias was needed in the end: a `#[serde(flatten)] outcome`
+  field on a concrete `GateRouteResult` struct is a plain named type, so
+  `body = GateRouteResponse` parses without any nested-generic workaround.
 - **Breaking change** — accepted because pre-prod; no production migration.
 - **Routing-specific shape** — the fan-out is not a reusable batch primitive (it
   bakes in "one source"), so blops/range are not generalised here. That is a

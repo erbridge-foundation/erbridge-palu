@@ -37,6 +37,15 @@ pub enum AppError {
 }
 
 impl AppError {
+    /// The `(code, message)` pair this error reports, without the status code.
+    /// Used by the system-route fan-out to carry a per-destination failure in a
+    /// `200` response body, so an in-slot error and a single-request `4xx` body
+    /// share one source of truth (the `parts()` logic) and cannot drift.
+    pub(crate) fn code_message(&self) -> (&'static str, String) {
+        let (_status, code, message) = self.parts();
+        (code, message)
+    }
+
     fn parts(&self) -> (StatusCode, &'static str, String) {
         match self {
             AppError::UnknownSystem(s) => (
