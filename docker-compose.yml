@@ -1,33 +1,33 @@
-# Run erbridge-geodesic locally as a standalone service (e.g. to point a dev
+# Run erbridge-palu locally as a standalone service (e.g. to point a dev
 # machine or the wormhole mapper at it). It has no auth — keep it on a trusted
 # network; the port below binds to localhost only.
 #
 # By default it downloads the live SDE from CCP. To run fully offline against
-# the checked-in test fixture instead, uncomment GEODESIC_SDE_DIR and the
+# the checked-in test fixture instead, uncomment PALU_SDE_DIR and the
 # fixture volume mount below (handy for HURL/manual testing without a download).
 services:
-  geodesic:
+  palu:
     build: .
     ports:
       # Drop the `127.0.0.1:` prefix to share it on a trusted network.
       - "127.0.0.1:5001:5001"
     environment:
       RUST_LOG: "info"
-      GEODESIC_CACHE_DIR: "/var/cache/erbridge-geodesic"
+      PALU_CACHE_DIR: "/var/cache/erbridge-palu"
       # All settings have sane defaults; uncomment to override.
-      # GEODESIC_PORT: "5001"
-      # GEODESIC_SDE_RELOAD_INTERVAL_SECS: "3600"   # 0 disables
-      # GEODESIC_EVE_SCOUT_INTERVAL_SECS: "600"     # 0 disables
+      # PALU_PORT: "5001"
+      # PALU_SDE_RELOAD_INTERVAL_SECS: "3600"   # 0 disables
+      # PALU_EVE_SCOUT_INTERVAL_SECS: "600"     # 0 disables
       #
       # Offline fixture mode (no CCP/EVE-Scout downloads):
-      # GEODESIC_SDE_DIR: "/fixture"
-      # GEODESIC_EVE_SCOUT_INTERVAL_SECS: "0"
+      # PALU_SDE_DIR: "/fixture"
+      # PALU_EVE_SCOUT_INTERVAL_SECS: "0"
     volumes:
       # Persist the SDE cache so restarts skip the re-download.
-      - geodesic-cache:/var/cache/erbridge-geodesic
+      - palu-cache:/var/cache/erbridge-palu
       # For offline fixture mode, expose the fixture build dir read-only:
       # - ./tests/fixtures/sde/1:/fixture:ro
     restart: unless-stopped
 
 volumes:
-  geodesic-cache:
+  palu-cache:

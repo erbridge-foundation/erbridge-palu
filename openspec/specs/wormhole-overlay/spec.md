@@ -30,7 +30,7 @@ ship-fit change). Self-loops and duplicate connections SHALL be ignored.
 
 The service SHALL fetch wormhole signatures from EVE-Scout
 (`GET https://api.eve-scout.com/v2/public/signatures`) in a background task on an
-interval (`GEODESIC_EVE_SCOUT_INTERVAL_SECS`, default 600; `0` disables) and hold
+interval (`PALU_EVE_SCOUT_INTERVAL_SECS`, default 600; `0` disables) and hold
 the parsed snapshot behind an `ArcSwap`. The service SHALL NOT call EVE-Scout on
 the request path. When `include_thera` (origin system 31000005) or
 `include_turnur` (origin system 30002086) is set, the corresponding signatures

@@ -16,7 +16,7 @@ manifest, downloading the matching per-build ZIP, extracting only
 `typeDogma.jsonl`, and caching the extracted files on disk so restarts do not
 require re-download. Cache writes SHALL be atomic (write to a temporary path, then
 rename). The cache directory SHALL default to the platform cache location and be
-overridable via `GEODESIC_CACHE_DIR`. Because `types.jsonl` is large (every item
+overridable via `PALU_CACHE_DIR`. Because `types.jsonl` is large (every item
 in EVE), parsing it SHALL stream and filter during the read, retaining only
 jump-capable hulls, and SHALL NOT materialise the full file in memory.
 
@@ -79,7 +79,7 @@ light-year-distance queries and is not queried by any foundation endpoint.
 ### Requirement: SDE hot-reload
 
 The service SHALL hold `GraphData` behind an `ArcSwap` and run a background task
-that polls the SDE manifest on an interval (`GEODESIC_SDE_RELOAD_INTERVAL_SECS`,
+that polls the SDE manifest on an interval (`PALU_SDE_RELOAD_INTERVAL_SECS`,
 default 3600; `0` disables). When a newer build number is published, the task
 SHALL build a complete new `GraphData` — including the hull catalog — in memory and
 only then atomically swap it in. The map graph and hull catalog in any live

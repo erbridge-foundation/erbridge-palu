@@ -1,6 +1,6 @@
-# erbridge-geodesic
+# erbridge-palu
 
-[![Build](https://github.com/erbridge-foundation/erbridge-geodesic/actions/workflows/backend.yml/badge.svg)](https://github.com/erbridge-foundation/erbridge-geodesic/actions/workflows/backend.yml)
+[![Build](https://github.com/erbridge-foundation/erbridge-palu/actions/workflows/backend.yml/badge.svg)](https://github.com/erbridge-foundation/erbridge-palu/actions/workflows/backend.yml)
 
 ---
 
@@ -12,6 +12,13 @@ This is a foundation: black ops staging, wormhole ship-size enforcement, and
 authentication are deliberately **out of scope** and land as additive changes.
 It ships with **no authentication** and is meant to run as a docker-internal
 service (e.g. behind the wormhole mapper) — do not expose it publicly.
+
+## The name
+
+*Palu* is the Carolinian word for a **master navigator** — the Pacific wayfinders
+who crossed thousands of miles of open ocean by reading the stars, swells, and
+birds, without instruments. Naming a New Eden routing engine after them is a
+small tribute to the original pathfinders.
 
 ## Requirements
 
@@ -27,7 +34,7 @@ The server binds to `0.0.0.0:5001` by default. On first start it downloads the
 SDE (a few MB) and builds the graph; subsequent starts load from the disk cache.
 
 ```sh
-GEODESIC_PORT=9090 cargo run     # override the port
+PALU_PORT=9090 cargo run     # override the port
 RUST_LOG=debug cargo run         # more verbose logging
 ```
 
@@ -43,8 +50,8 @@ just run-fixture   # run offline against the checked-in SDE fixture
 A published image is available from GHCR:
 
 ```sh
-docker pull ghcr.io/erbridge-foundation/geodesic:latest
-docker run --rm -p 5001:5001 ghcr.io/erbridge-foundation/geodesic:latest
+docker pull ghcr.io/erbridge-foundation/palu:latest
+docker run --rm -p 5001:5001 ghcr.io/erbridge-foundation/palu:latest
 ```
 
 Or build and run locally with compose:
@@ -129,15 +136,15 @@ Set `include_zarzakh: true` to opt in — the caller owns the 6-hour-lock warnin
 
 ## Configuration
 
-All settings use the `GEODESIC_*` convention and have defaults.
+All settings use the `PALU_*` convention and have defaults.
 
 | Variable                              | Default                  | Description                                  |
 |---------------------------------------|--------------------------|----------------------------------------------|
-| `GEODESIC_PORT`                       | `5001`                   | TCP listen port                              |
-| `GEODESIC_CACHE_DIR`                  | platform cache dir       | SDE cache location                           |
-| `GEODESIC_SDE_DIR`                    | (unset)                  | Load pre-extracted SDE JSONL from this dir, skipping the download (offline dev/tests); disables the SDE reload poll |
-| `GEODESIC_SDE_RELOAD_INTERVAL_SECS`   | `3600`                   | SDE freshness poll; `0` disables             |
-| `GEODESIC_EVE_SCOUT_INTERVAL_SECS`    | `600`                    | EVE-Scout poll; `0` disables                 |
+| `PALU_PORT`                       | `5001`                   | TCP listen port                              |
+| `PALU_CACHE_DIR`                  | platform cache dir       | SDE cache location                           |
+| `PALU_SDE_DIR`                    | (unset)                  | Load pre-extracted SDE JSONL from this dir, skipping the download (offline dev/tests); disables the SDE reload poll |
+| `PALU_SDE_RELOAD_INTERVAL_SECS`   | `3600`                   | SDE freshness poll; `0` disables             |
+| `PALU_EVE_SCOUT_INTERVAL_SECS`    | `600`                    | EVE-Scout poll; `0` disables                 |
 | `RUST_LOG`                            | `info`                   | Tracing filter                               |
 
 ## SDE cache
@@ -147,13 +154,13 @@ extracted files on disk. Default locations:
 
 | Platform    | Default path                                                              |
 |-------------|--------------------------------------------------------------------------|
-| Linux/macOS | `$XDG_CACHE_HOME/erbridge-geodesic/sde/` or `~/.cache/erbridge-geodesic/sde/` |
-| Windows     | `%LOCALAPPDATA%\erbridge-geodesic\sde\`                                   |
+| Linux/macOS | `$XDG_CACHE_HOME/erbridge-palu/sde/` or `~/.cache/erbridge-palu/sde/` |
+| Windows     | `%LOCALAPPDATA%\erbridge-palu\sde\`                                   |
 
-Override with `GEODESIC_CACHE_DIR`.
+Override with `PALU_CACHE_DIR`.
 
 > ⚠️ The service **mutates** its cache dir: it writes new build subdirectories
-> and prunes old ones. Don't point `GEODESIC_CACHE_DIR` at `tests/fixtures/` or
+> and prunes old ones. Don't point `PALU_CACHE_DIR` at `tests/fixtures/` or
 > any directory whose contents you care about.
 
 The graph hot-reloads in the background: when CCP publishes a newer build, a new
@@ -170,7 +177,7 @@ requests. Code is organised by layer:
 src/
 ├── main.rs          entry point: load SDE, spawn pollers, serve
 ├── lib.rs           router wiring + OpenAPI document
-├── config.rs        GEODESIC_* env helpers + tracing init
+├── config.rs        PALU_* env helpers + tracing init
 ├── app_state.rs     ArcSwap graph + EVE-Scout snapshot
 ├── model.rs         core domain types (System, GraphData, SecClass)
 ├── sde/             SDE cache, manifest poll, JSONL parsing

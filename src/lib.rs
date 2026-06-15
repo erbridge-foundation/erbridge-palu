@@ -1,4 +1,4 @@
-//! erbridge-geodesic: EVE Online gate-routing REST API.
+//! erbridge-palu: EVE Online gate-routing REST API.
 //!
 //! Architecture (no DB, no auth in this foundation):
 //! - `sde` / `graph` / `model`: load the SDE and build the in-memory graph.
@@ -34,8 +34,8 @@ use app_state::AppState;
 #[derive(OpenApi)]
 #[openapi(
     info(
-        title = "erbridge-geodesic",
-        description = "EVE Online gate-routing REST API",
+        title = "erbridge-palu",
+        description = "EVE Online gate-routing REST API. Named for the palu — the Carolinian master navigators who crossed open ocean by reading the stars.",
     ),
     tags(
         (name = "routing", description = "Gate route computation"),

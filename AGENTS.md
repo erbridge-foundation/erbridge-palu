@@ -1,4 +1,4 @@
-# Agent context — E-R Bridge - Geodesic
+# Agent context — E-R Bridge - Palu
 
 Project context, stack, routing, auth, and DB conventions: see [`openspec/AGENTS.md`](openspec/AGENTS.md).
 

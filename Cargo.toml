@@ -1,10 +1,10 @@
 [package]
-name = "erbridge-geodesic"
+name = "erbridge-palu"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "erbridge-geodesic"
+name = "erbridge-palu"
 path = "src/main.rs"
 
 [dependencies]

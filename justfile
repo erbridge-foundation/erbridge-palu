@@ -1,6 +1,6 @@
-# Image name matches the GHCR registry layout: ghcr.io/erbridge-foundation/geodesic
+# Image name matches the GHCR registry layout: ghcr.io/erbridge-foundation/palu
 registry := "ghcr.io/erbridge-foundation"
-image := registry + "/geodesic"
+image := registry + "/palu"
 
 # ─── default: list available recipes ─────────────────────────────────────────
 default:
@@ -52,9 +52,9 @@ run:
 
 # Run the service offline against the checked-in SDE fixture
 run-fixture port="5001":
-    GEODESIC_SDE_DIR="$PWD/tests/fixtures/sde/1" \
-    GEODESIC_EVE_SCOUT_INTERVAL_SECS=0 \
-    GEODESIC_PORT={{port}} \
+    PALU_SDE_DIR="$PWD/tests/fixtures/sde/1" \
+    PALU_EVE_SCOUT_INTERVAL_SECS=0 \
+    PALU_PORT={{port}} \
         cargo run
 
 # ─── docker ──────────────────────────────────────────────────────────────────

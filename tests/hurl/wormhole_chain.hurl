@@ -16,8 +16,8 @@
 #   J120455  -> Jita  (safest)   = 25
 #
 # Run against the SDE cache fixture (full real SDE):
-#   GEODESIC_CACHE_DIR=tests/fixtures/sde GEODESIC_SDE_RELOAD_INTERVAL_SECS=0 \
-#   GEODESIC_EVE_SCOUT_INTERVAL_SECS=0 cargo run
+#   PALU_CACHE_DIR=tests/fixtures/sde PALU_SDE_RELOAD_INTERVAL_SECS=0 \
+#   PALU_EVE_SCOUT_INTERVAL_SECS=0 cargo run
 
 # ── J120455 -> J172840: 14 jumps, bridging the two chains via K-space ─────────
 # J120455 -(WH)-> Lashkai -(9 gates through Amarr)-> Martha -(4 WH)-> J172840.

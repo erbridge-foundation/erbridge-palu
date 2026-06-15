@@ -45,7 +45,7 @@ jobs:
         run: tests/hurl/run-hurl.sh
 
   publish:
-    name: build + push geodesic image
+    name: build + push palu image
     runs-on: ubuntu-latest
     needs: check
     # Publish only for the develop branch (-> :develop, staging) and v* tags
@@ -100,7 +100,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/geodesic
+          images: ghcr.io/${{ github.repository_owner }}/palu
           # The publish gate only lets develop branch + v* tag pushes reach
           # here: :develop on the develop push; :v<x.y.z> + :latest on a tag
           # push; :sha-<short> always.
@@ -116,7 +116,7 @@ jobs:
       - name: Refuse to overwrite an existing release image
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          image="ghcr.io/${{ github.repository_owner }}/geodesic:${{ github.ref_name }}"
+          image="ghcr.io/${{ github.repository_owner }}/palu:${{ github.ref_name }}"
           if docker manifest inspect "$image" >/dev/null 2>&1; then
             echo "::error::${image} is already published. Release versions are immutable — cut a new v<semver> tag."
             exit 1

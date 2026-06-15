@@ -13,14 +13,14 @@ PORT="${1:-5099}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BASE_URL="http://localhost:${PORT}"
 
-cargo build --quiet --bin erbridge-geodesic
+cargo build --quiet --bin erbridge-palu
 
-GEODESIC_CACHE_DIR="${ROOT}/tests/fixtures/sde" \
-GEODESIC_SDE_RELOAD_INTERVAL_SECS=0 \
-GEODESIC_EVE_SCOUT_INTERVAL_SECS=0 \
-GEODESIC_PORT="${PORT}" \
+PALU_CACHE_DIR="${ROOT}/tests/fixtures/sde" \
+PALU_SDE_RELOAD_INTERVAL_SECS=0 \
+PALU_EVE_SCOUT_INTERVAL_SECS=0 \
+PALU_PORT="${PORT}" \
 RUST_LOG="${RUST_LOG:-error}" \
-    "${ROOT}/target/debug/erbridge-geodesic" &
+    "${ROOT}/target/debug/erbridge-palu" &
 SERVER_PID=$!
 trap 'kill "${SERVER_PID}" 2>/dev/null || true' EXIT
 

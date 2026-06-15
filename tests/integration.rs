@@ -20,11 +20,11 @@ use axum::http::{Request, StatusCode};
 use chrono::Utc;
 use tower::ServiceExt;
 
-use erbridge_geodesic::app_state::AppState;
-use erbridge_geodesic::build_router;
-use erbridge_geodesic::eve_scout::{EveScoutSnapshot, Signature, THERA_SYSTEM_ID};
-use erbridge_geodesic::graph::build_graph_data;
-use erbridge_geodesic::sde::cache::SdeCache;
+use erbridge_palu::app_state::AppState;
+use erbridge_palu::build_router;
+use erbridge_palu::eve_scout::{EveScoutSnapshot, Signature, THERA_SYSTEM_ID};
+use erbridge_palu::graph::build_graph_data;
+use erbridge_palu::sde::cache::SdeCache;
 
 fn fixture_state() -> AppState {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sde");
@@ -325,7 +325,7 @@ async fn thera_reachable_as_dest_without_include_flag() {
 
 #[tokio::test]
 async fn catalog_loads_blops_and_resolves_known_hull() {
-    use erbridge_geodesic::model::HullCatalog;
+    use erbridge_palu::model::HullCatalog;
 
     // Build the catalog from the fixture the same way the app does.
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sde");

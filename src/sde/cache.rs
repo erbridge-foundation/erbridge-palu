@@ -166,12 +166,12 @@ fn load_hull_catalog(dir: &Path) -> Result<crate::model::RawHullCatalog> {
         .context("parsing types.jsonl/typeDogma.jsonl")
 }
 
-/// Resolve the cache directory: `GEODESIC_CACHE_DIR` override → platform cache.
+/// Resolve the cache directory: `PALU_CACHE_DIR` override → platform cache.
 pub fn resolve_cache_dir() -> Result<PathBuf> {
-    if let Ok(dir) = std::env::var("GEODESIC_CACHE_DIR") {
+    if let Ok(dir) = std::env::var("PALU_CACHE_DIR") {
         return Ok(PathBuf::from(dir));
     }
-    let dirs = directories::ProjectDirs::from("", "", "erbridge-geodesic")
+    let dirs = directories::ProjectDirs::from("", "", "erbridge-palu")
         .context("could not determine platform cache directory")?;
     Ok(dirs.cache_dir().join("sde"))
 }
@@ -311,22 +311,22 @@ pub async fn ensure_cache(
     Ok((data, new_meta))
 }
 
-/// `GEODESIC_SDE_DIR` override, if set: a directory holding pre-extracted
+/// `PALU_SDE_DIR` override, if set: a directory holding pre-extracted
 /// `mapSolarSystems.jsonl` / `mapStargates.jsonl` to load directly, skipping
 /// the manifest/download path entirely. Intended for local dev and offline
 /// tests (e.g. the HURL server). Build number is reported as `0`.
 pub fn resolve_sde_dir() -> Option<PathBuf> {
-    std::env::var("GEODESIC_SDE_DIR").ok().map(PathBuf::from)
+    std::env::var("PALU_SDE_DIR").ok().map(PathBuf::from)
 }
 
 /// Load `RawSdeData` directly from a directory containing the two JSONL files
 /// (no build subdir, no metadata, no network). Returns a synthetic metadata
 /// with build number `0`.
 pub fn load_from_dir(dir: &Path) -> Result<(RawSdeData, CacheMetadata)> {
-    info!(dir = %dir.display(), "loading SDE from GEODESIC_SDE_DIR (offline)");
+    info!(dir = %dir.display(), "loading SDE from PALU_SDE_DIR (offline)");
     for f in FILES {
         if !dir.join(f).exists() {
-            anyhow::bail!("GEODESIC_SDE_DIR {} is missing {f}", dir.display());
+            anyhow::bail!("PALU_SDE_DIR {} is missing {f}", dir.display());
         }
     }
     let systems = parse_file(dir, "mapSolarSystems.jsonl", parse_systems)?;

@@ -39,8 +39,8 @@ BREAKING CHANGE: the `less_safe` preference value is no longer accepted.
 ```
 feat: add gate-routing foundation
 fix(routing): label a parallel-gate wormhole step as stargate
-docs: document the GEODESIC_SDE_DIR offline override
-ci: publish the geodesic image to GHCR on develop and tags
+docs: document the PALU_SDE_DIR offline override
+ci: publish the palu image to GHCR on develop and tags
 test(eve-scout): cover expired-signature dropping
 ```
 
