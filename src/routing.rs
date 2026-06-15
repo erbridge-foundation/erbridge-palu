@@ -283,6 +283,105 @@ pub fn shortest_path(
     None
 }
 
+/// One settled target from a multi-target search: the target node, its gate
+/// distance from the source (edge count under the active preference), and the
+/// reconstructed path from the source (inclusive of both ends).
+pub struct SettledTarget {
+    pub node: NodeIndex,
+    /// Number of gate jumps from the source (path edges = `path.len() - 1`).
+    pub jumps: usize,
+    pub path: Path,
+}
+
+/// Dijkstra from `from` that settles every node in `targets` in a single
+/// outward expansion, rather than one search per target. Returns a
+/// `SettledTarget` for each reachable target; targets that are unreachable
+/// under the overlay are simply absent from the result.
+///
+/// This is the additive sibling of [`shortest_path`]: same scratch, same edge
+/// weights and overlay, but the stop condition is "all requested targets
+/// settled (or the graph exhausted)" instead of early-return at one. Honours
+/// the `RouteContext` (avoid, preference, wormhole connections) identically.
+///
+/// `jumps` counts path edges (so it composes the same penalties the single
+/// search uses); the caller ranks candidates by it. The returned order is
+/// unspecified — callers sort as they need.
+pub fn shortest_path_multi(
+    ctx: &RouteContext<'_>,
+    from: NodeIndex,
+    targets: &[NodeIndex],
+    scratch: &mut DijkstraScratch,
+) -> Vec<SettledTarget> {
+    let n = ctx.graph.systems.len();
+    debug_assert!(from.index() < n);
+    scratch.reset(n);
+
+    // Which nodes are still-unsettled targets, and how many remain — so the
+    // search can stop as soon as the last one is popped (or the heap drains).
+    let mut want: FxHashSet<u32> = targets.iter().map(|t| t.index() as u32).collect();
+    let mut remaining = want.len();
+
+    let from_u = from.index() as u32;
+    scratch.dist[from.index()] = 0.0;
+    let mut heap: BinaryHeap<HeapItem> = BinaryHeap::new();
+    heap.push(HeapItem {
+        dist: 0.0,
+        node: from_u,
+    });
+
+    while let Some(HeapItem { dist, node }) = heap.pop() {
+        let idx = node as usize;
+        if scratch.visited[idx] {
+            continue;
+        }
+        scratch.visited[idx] = true;
+
+        // Settling a target node finalises its shortest distance (Dijkstra pops
+        // each node at its final distance). Account for it; stop when none left.
+        if want.remove(&node) {
+            remaining -= 1;
+            if remaining == 0 {
+                break;
+            }
+        }
+
+        if dist > scratch.dist[idx] {
+            continue;
+        }
+
+        let cur = NodeIndex::new(idx);
+        for nb in ctx.neighbors(cur) {
+            let nb_idx = nb.index();
+            if scratch.visited[nb_idx] {
+                continue;
+            }
+            let new_dist = dist + ctx.edge_weight(cur, nb);
+            if new_dist < scratch.dist[nb_idx] {
+                scratch.dist[nb_idx] = new_dist;
+                scratch.prev[nb_idx] = node;
+                heap.push(HeapItem {
+                    dist: new_dist,
+                    node: nb_idx as u32,
+                });
+            }
+        }
+    }
+
+    // A target is reachable iff it was visited (settled). Reconstruct each.
+    targets
+        .iter()
+        .filter(|t| scratch.visited[t.index()])
+        .map(|&t| {
+            let path = reconstruct_path(&scratch.prev, from_u, t.index() as u32);
+            SettledTarget {
+                node: t,
+                jumps: path.len().saturating_sub(1),
+                path,
+            }
+        })
+        .collect()
+}
+
 fn reconstruct_path(prev: &[u32], from: u32, to: u32) -> Path {
     let mut rev: Path = SmallVec::new();
     let mut cur = to;
@@ -668,6 +767,121 @@ mod tests {
         let path = shortest_path(&ctx, a, e, &mut s).unwrap();
         assert_eq!(path.len(), 2, "should take the WH shortcut");
         assert!(ctx.is_wh_edge(path[0], path[1]));
+    }
+
+    // ── multi-target search ────────────────────────────────────────────────────
+
+    /// Linear chain A—B—C—D (3 gate jumps end to end), all highsec.
+    fn linear_four() -> GraphData {
+        let raw = RawSdeData {
+            systems: vec![
+                sys(1, "A", SecClass::Highsec),
+                sys(2, "B", SecClass::Highsec),
+                sys(3, "C", SecClass::Highsec),
+                sys(4, "D", SecClass::Highsec),
+            ],
+            gate_pairs: vec![(1, 2), (2, 3), (3, 4)],
+            hulls: Default::default(),
+        };
+        build_graph_data(raw, 0)
+    }
+
+    #[test]
+    fn multi_target_settles_all_at_varied_distances() {
+        let gd = linear_four();
+        let ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::Shortest);
+        let mut s = DijkstraScratch::new();
+        let a = gd.id_to_idx[&1];
+        let (b, c, d) = (gd.id_to_idx[&2], gd.id_to_idx[&3], gd.id_to_idx[&4]);
+        let got = shortest_path_multi(&ctx, a, &[d, b, c], &mut s);
+        assert_eq!(got.len(), 3, "all three targets settled in one pass");
+        let by_node: FxHashMap<NodeIndex, usize> = got.iter().map(|t| (t.node, t.jumps)).collect();
+        assert_eq!(by_node[&b], 1);
+        assert_eq!(by_node[&c], 2);
+        assert_eq!(by_node[&d], 3);
+        // Each reconstructed path starts at A and ends at its target.
+        for t in &got {
+            assert_eq!(t.path.first().copied(), Some(a));
+            assert_eq!(t.path.last().copied(), Some(t.node));
+        }
+    }
+
+    #[test]
+    fn multi_target_omits_unreachable_targets() {
+        // A—B—C—D plus an isolated E: E is never settled.
+        let raw = RawSdeData {
+            systems: vec![
+                sys(1, "A", SecClass::Highsec),
+                sys(2, "B", SecClass::Highsec),
+                sys(3, "C", SecClass::Highsec),
+                sys(4, "D", SecClass::Highsec),
+                sys(5, "E", SecClass::Highsec),
+            ],
+            gate_pairs: vec![(1, 2), (2, 3), (3, 4)],
+            hulls: Default::default(),
+        };
+        let gd = build_graph_data(raw, 0);
+        let ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::Shortest);
+        let mut s = DijkstraScratch::new();
+        let a = gd.id_to_idx[&1];
+        let (d, e) = (gd.id_to_idx[&4], gd.id_to_idx[&5]);
+        let got = shortest_path_multi(&ctx, a, &[d, e], &mut s);
+        assert_eq!(got.len(), 1, "only the reachable target comes back");
+        assert_eq!(got[0].node, d);
+        assert!(!got.iter().any(|t| t.node == e));
+    }
+
+    #[test]
+    fn multi_target_reachable_subset_when_some_blocked() {
+        // A—B—C—D; avoid C blocks D but B stays reachable.
+        let gd = linear_four();
+        let c = gd.id_to_idx[&3];
+        let mut avoid = FxHashSet::default();
+        avoid.insert(c);
+        let ctx = RouteContext::new(&gd, avoid, Preference::Shortest);
+        let mut s = DijkstraScratch::new();
+        let a = gd.id_to_idx[&1];
+        let (b, d) = (gd.id_to_idx[&2], gd.id_to_idx[&4]);
+        let got = shortest_path_multi(&ctx, a, &[b, d], &mut s);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].node, b);
+        assert_eq!(got[0].jumps, 1);
+    }
+
+    #[test]
+    fn multi_target_source_as_target_is_zero_jumps() {
+        let gd = linear_four();
+        let ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::Shortest);
+        let mut s = DijkstraScratch::new();
+        let (a, c) = (gd.id_to_idx[&1], gd.id_to_idx[&3]);
+        let got = shortest_path_multi(&ctx, a, &[a, c], &mut s);
+        let by_node: FxHashMap<NodeIndex, usize> = got.iter().map(|t| (t.node, t.jumps)).collect();
+        assert_eq!(by_node[&a], 0);
+        assert_eq!(by_node[&c], 2);
+    }
+
+    #[test]
+    fn multi_target_honours_wormhole_overlay() {
+        // A—B and C—D; a WH B↔C makes D reachable from A in 3 jumps.
+        let raw = RawSdeData {
+            systems: vec![
+                sys(1, "A", SecClass::Highsec),
+                sys(2, "B", SecClass::Highsec),
+                sys(3, "C", SecClass::Highsec),
+                sys(4, "D", SecClass::Highsec),
+            ],
+            gate_pairs: vec![(1, 2), (3, 4)],
+            hulls: Default::default(),
+        };
+        let gd = build_graph_data(raw, 0);
+        let mut ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::Shortest);
+        let (b, c) = (gd.id_to_idx[&2], gd.id_to_idx[&3]);
+        ctx.add_connection(b, c);
+        let mut s = DijkstraScratch::new();
+        let (a, d) = (gd.id_to_idx[&1], gd.id_to_idx[&4]);
+        let got = shortest_path_multi(&ctx, a, &[d], &mut s);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].jumps, 3, "A—B—(WH)—C—D");
     }
 
     #[test]

@@ -50,6 +50,7 @@ pub fn build_router(state: AppState) -> Router {
 
     let (router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .routes(routes!(handlers::route::route_system))
+        .routes(routes!(handlers::route::route_blops))
         .routes(routes!(handlers::health::health))
         .split_for_parts();
 
@@ -66,7 +67,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openapi_document_describes_both_endpoints() {
+    fn bare_apidoc_has_no_paths_until_router_collects_them() {
         let doc = ApiDoc::openapi();
         let json = serde_json::to_value(&doc).unwrap();
         let paths = json["paths"].as_object().unwrap();
@@ -76,7 +77,7 @@ mod tests {
     }
 
     #[test]
-    fn router_collects_paths_into_openapi() {
+    fn router_collects_all_endpoint_paths_into_openapi() {
         use crate::graph::build_graph_data;
         use crate::model::RawSdeData;
         use std::sync::Arc;
@@ -90,8 +91,21 @@ mod tests {
             1,
         ));
         let state = AppState::new(graph);
-        // Building the router must not panic; the OpenApiRouter wires both
-        // annotated handlers and the Swagger UI.
+        // Building the router wires every annotated handler plus the Swagger UI;
+        // its OpenApi must then describe all three endpoints (the blops staging
+        // path is the one added by this change).
+        let (_router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
+            .routes(routes!(handlers::route::route_system))
+            .routes(routes!(handlers::route::route_blops))
+            .routes(routes!(handlers::health::health))
+            .split_for_parts();
+        let json = serde_json::to_value(&api).unwrap();
+        let paths = json["paths"].as_object().unwrap();
+        assert!(paths.contains_key("/api/v1/route/system"));
+        assert!(paths.contains_key("/api/v1/route/blops"));
+        assert!(paths.contains_key("/health"));
+
+        // The full router still builds without panicking.
         let _router = build_router(state);
     }
 }

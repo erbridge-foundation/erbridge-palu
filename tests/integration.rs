@@ -422,3 +422,178 @@ async fn swagger_ui_is_reachable() {
         resp.status()
     );
 }
+
+// ── blops staging (handler → service over the full SDE fixture) ───────────────
+//
+// Pinned in-fixture example: B-E3KQ (A) → Otanuomi (B) — both nullsec — bridged
+// by a Sin at JDC 5 (effective range 8.0 LY). The fleet drives just two gate
+// jumps (B-E3KQ → 5T-KM3 → 0R-F2F) to the fewest-gate in-range staging system
+// 0R-F2F, then bridges the final ~5.81 LY to Otanuomi. This is the realistic
+// black-ops scenario: a short nullsec drive to get in bridge range, not a
+// cross-map haul. Pinned in the style of the Jita↔Amarr gate-count facts above;
+// a fixture regen that moves the map is meant to surface here.
+
+#[tokio::test]
+async fn blops_happy_path_routes_to_expected_staging() {
+    let (status, body) = post_blops(
+        fixture_state(),
+        serde_json::json!({ "from": "B-E3KQ", "to": "Otanuomi", "ship": "Sin", "jdc_level": 5 }),
+    )
+    .await;
+    assert_eq!(status, 200, "body={body}");
+    assert_eq!(body["effective_ly"], 8.0);
+    assert_eq!(body["jdc_level"], 5);
+    assert_eq!(body["defaulted"], false);
+
+    let chosen = &body["chosen"];
+    assert_eq!(chosen["gate_jumps"], 2, "two-jump drive into bridge range");
+    // Gate path: A → one nullsec hop → ★, all by stargate.
+    let path = chosen["gate_path"].as_array().unwrap();
+    assert_eq!(path.len(), 3);
+    assert_eq!(path.first().unwrap()["system"], "B-E3KQ");
+    assert_eq!(path.first().unwrap()["via"], "start");
+    assert_eq!(path[1]["system"], "5T-KM3");
+    assert_eq!(path[1]["via"], "stargate");
+    assert_eq!(path.last().unwrap()["system"], "0R-F2F");
+    assert_eq!(path.last().unwrap()["via"], "stargate");
+    // A and B are both nullsec (the realistic blops framing).
+    assert_eq!(path.first().unwrap()["sec_class"], "Nullsec");
+    assert_eq!(chosen["bridge"]["from"]["system"], "0R-F2F");
+    assert_eq!(chosen["bridge"]["from"]["sec_class"], "Nullsec");
+    assert_eq!(chosen["bridge"]["to"]["system"], "Otanuomi");
+    assert_eq!(chosen["bridge"]["to"]["sec_class"], "Nullsec");
+    assert_eq!(chosen["bridge"]["in_range"], true);
+    // Jump distance is reported in light-years, rounded to two decimals.
+    let jump_ly = chosen["bridge"]["jump_ly"].as_f64().unwrap();
+    assert_eq!(jump_ly, 5.81, "pinned rounded bridge distance");
+    assert!(jump_ly <= 8.0, "bridge must be within effective range");
+    // Fallback candidates are present and ranked no-better than the chosen.
+    let alts = body["alternates"].as_array().unwrap();
+    assert!(!alts.is_empty(), "expected inline fallback candidates");
+    assert!(alts[0]["gate_jumps"].as_u64().unwrap() >= 2);
+}
+
+#[tokio::test]
+async fn blops_already_in_range_needs_zero_gate_jumps() {
+    // Start from the staging system itself: 0R-F2F is ~5.81 LY from Otanuomi,
+    // inside a Sin's 8.0 LY range, so the fleet is already in bridge range. The
+    // chosen ★ is 0R-F2F itself at zero gate jumps (the gate path is just the
+    // start system), and no fallback candidates are offered — there is nothing
+    // to drive to.
+    let (status, body) = post_blops(
+        fixture_state(),
+        serde_json::json!({ "from": "0R-F2F", "to": "Otanuomi", "ship": "Sin", "jdc_level": 5 }),
+    )
+    .await;
+    assert_eq!(status, 200, "body={body}");
+    let chosen = &body["chosen"];
+    assert_eq!(chosen["gate_jumps"], 0, "already in range → no driving");
+    let path = chosen["gate_path"].as_array().unwrap();
+    assert_eq!(path.len(), 1, "gate path is just the start system");
+    assert_eq!(path[0]["system"], "0R-F2F");
+    assert_eq!(path[0]["via"], "start");
+    assert_eq!(chosen["bridge"]["from"]["system"], "0R-F2F");
+    assert_eq!(chosen["bridge"]["to"]["system"], "Otanuomi");
+    assert_eq!(chosen["bridge"]["in_range"], true);
+    // No alternates when no gate jumps are required.
+    assert_eq!(
+        body["alternates"].as_array().unwrap().len(),
+        0,
+        "zero-jump staging offers no fallbacks"
+    );
+}
+
+#[tokio::test]
+async fn blops_defaults_to_worst_blops_hull() {
+    // Omitting `ship` uses the catalog's worst Black Ops hull and flags it.
+    let (status, body) = post_blops(
+        fixture_state(),
+        serde_json::json!({ "from": "B-E3KQ", "to": "Otanuomi" }),
+    )
+    .await;
+    assert_eq!(status, 200, "body={body}");
+    assert_eq!(body["defaulted"], true);
+    assert_eq!(body["jdc_level"], 5, "jdc_level defaults to maxed");
+    // The worst-hull effective range still resolves the same staging system.
+    assert_eq!(body["chosen"]["bridge"]["from"]["system"], "0R-F2F");
+}
+
+#[tokio::test]
+async fn blops_highsec_target_is_rejected() {
+    // Amarr is highsec → a cyno cannot be lit there; rejected before routing
+    // with the distinct error (not a generic unreachable).
+    let (status, body) = post_blops(
+        fixture_state(),
+        serde_json::json!({ "from": "Jita", "to": "Amarr", "ship": "Sin" }),
+    )
+    .await;
+    assert_eq!(status, 400, "body={body}");
+    assert_eq!(body["error"], "cyno_target_highsec");
+}
+
+#[tokio::test]
+async fn blops_no_candidate_in_range_is_404() {
+    // J105443 (a J-space system) at JDC 0 (Sin 4.0 LY) has no K-space staging
+    // system within range → distinct no_staging_in_range, not unreachable.
+    let (status, body) = post_blops(
+        fixture_state(),
+        serde_json::json!({ "from": "Jita", "to": "J105443", "ship": "Sin", "jdc_level": 0 }),
+    )
+    .await;
+    assert_eq!(status, 404, "body={body}");
+    assert_eq!(body["error"], "no_staging_in_range");
+}
+
+#[tokio::test]
+async fn blops_unknown_hull_is_400() {
+    let (status, body) = post_blops(
+        fixture_state(),
+        serde_json::json!({ "from": "B-E3KQ", "to": "Otanuomi", "ship": "Rifter" }),
+    )
+    .await;
+    assert_eq!(status, 400, "body={body}");
+    assert_eq!(body["error"], "unknown_hull");
+}
+
+#[tokio::test]
+async fn blops_invalid_jdc_level_is_400() {
+    let (status, body) = post_blops(
+        fixture_state(),
+        serde_json::json!({ "from": "B-E3KQ", "to": "Otanuomi", "ship": "Sin", "jdc_level": 9 }),
+    )
+    .await;
+    assert_eq!(status, 400, "body={body}");
+    assert_eq!(body["error"], "invalid_param");
+}
+
+#[tokio::test]
+async fn blops_accepts_numeric_system_and_hull_ids() {
+    // B-E3KQ = 30000307, Otanuomi = 30000192, Sin = 22430. Numeric forms
+    // resolve identically to names.
+    let (status, body) = post_blops(
+        fixture_state(),
+        serde_json::json!({ "from": 30000307_i64, "to": 30000192_i64, "ship": 22430_i64, "jdc_level": 5 }),
+    )
+    .await;
+    assert_eq!(status, 200, "body={body}");
+    assert_eq!(body["chosen"]["bridge"]["from"]["system"], "0R-F2F");
+}
+
+async fn post_blops(state: AppState, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+    let app = build_router(state);
+    let req = Request::builder()
+        .uri("/api/v1/route/blops")
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let json = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    };
+    (status, json)
+}

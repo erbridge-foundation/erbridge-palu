@@ -17,6 +17,20 @@ pub enum SystemRef {
     Id(i64),
 }
 
+/// A hull reference: either a case-insensitive name or a numeric SDE typeID.
+/// Mirrors `SystemRef` — `serde(untagged)` lets clients send either form, and
+/// it resolves against the hull catalog's name/typeID lookups. As with
+/// `SystemRef`, a quoted numeric string is read as a *name*; ids are sent as
+/// JSON numbers.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum ShipRef {
+    #[schema(example = "Sin")]
+    Name(String),
+    #[schema(example = 22430)]
+    Id(i64),
+}
+
 /// Routing preference. `prefer_gates` applies a small additive penalty per
 /// wormhole hop so a wormhole is taken only when it shortens the route enough.
 #[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
@@ -39,6 +53,10 @@ impl From<RoutePreference> for Preference {
 
 fn default_preference() -> RoutePreference {
     RoutePreference::Shortest
+}
+
+fn default_jdc_level() -> u8 {
+    crate::range::DEFAULT_JDC_LEVEL
 }
 
 /// A user-supplied wormhole connection added to the per-request overlay.
@@ -111,6 +129,120 @@ pub struct RouteStep {
     pub via: String,
 }
 
+/// Request body for `POST /api/v1/route/blops`. `from` is the fleet location A,
+/// `to` the fixed cyno target B. `ship` and `jdc_level` are optional — when
+/// omitted the handler defaults to the worst Black Ops hull at JDC 5. The
+/// routing knobs (`preference`, `avoid`, wormhole overlay) apply to the A→★
+/// gate leg exactly as for the system-route endpoint.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "from": "B-E3KQ",
+    "to": "Otanuomi",
+    "ship": "Sin",
+    "jdc_level": 5
+}))]
+pub struct BlopsRouteRequest {
+    pub from: SystemRef,
+    pub to: SystemRef,
+    /// Bridging hull. When omitted, defaults to the worst (shortest-range)
+    /// Black Ops hull in the catalog.
+    #[serde(default)]
+    pub ship: Option<ShipRef>,
+    /// Jump Drive Calibration level (0..=5). Defaults to 5 (maxed). A value
+    /// outside 0..=5 is rejected rather than clamped.
+    #[serde(default = "default_jdc_level")]
+    #[schema(default = 5, example = 5)]
+    pub jdc_level: u8,
+    #[serde(default = "default_preference")]
+    pub preference: RoutePreference,
+    /// Systems to exclude from the A→★ gate leg. Unknown systems yield a 400.
+    #[serde(default)]
+    pub avoid: Vec<SystemRef>,
+    /// When true, `connections[]` wormhole edges are added to the overlay.
+    #[serde(default)]
+    #[schema(default = false, example = false)]
+    pub use_wormholes: bool,
+    /// Per-request wormhole connections (only used when `use_wormholes`).
+    #[serde(default)]
+    pub connections: Vec<WhConnection>,
+    /// Add live EVE-Scout Thera signatures to the overlay.
+    #[serde(default)]
+    #[schema(default = false, example = false)]
+    pub include_thera: bool,
+    /// Add live EVE-Scout Turnur signatures to the overlay.
+    #[serde(default)]
+    #[schema(default = false, example = false)]
+    pub include_turnur: bool,
+    /// Allow Zarzakh as a transit hop on the gate leg (off by default).
+    #[serde(default)]
+    #[schema(default = false, example = false)]
+    pub include_zarzakh: bool,
+}
+
+/// Response body for `POST /api/v1/route/blops`: the chosen staging route plus
+/// ranked fallback candidates and the echoed bridge parameters.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BlopsRouteResponse {
+    /// The chosen staging route: gate path A→★ and the bridge leg ★→B.
+    pub chosen: BlopsChosen,
+    /// Next-best in-range staging candidates beyond ★, ranked the same way
+    /// (fewest gate jumps, then closest to B). Empty if ★ was the only one, or
+    /// when ★ is reached in zero gate jumps (the fleet is already in bridge
+    /// range, so there is nothing to fall back to).
+    pub alternates: Vec<BlopsCandidate>,
+    /// The JDC level used (echoed; reflects the default when omitted).
+    pub jdc_level: u8,
+    /// The effective bridge range in light-years used for the radius query.
+    pub effective_ly: f64,
+    /// True when the worst-Black-Ops-hull default was applied (no `ship` given).
+    pub defaulted: bool,
+}
+
+/// The chosen staging route: the gate path to ★ and the bridge leg ★→B.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BlopsChosen {
+    /// Gate route from A to the staging system ★ (inclusive of both ends).
+    pub gate_path: Vec<RouteStep>,
+    /// Gate jumps from A to ★ (`gate_path.len() - 1`).
+    pub gate_jumps: usize,
+    /// The bridge leg from ★ to the target B.
+    pub bridge: BlopsBridge,
+}
+
+/// The bridge leg ★→B: origin, destination, light-year gap, and whether the
+/// gap is within the effective range (always `true` for a chosen ★).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BlopsBridge {
+    /// The staging system ★ (bridge origin).
+    pub from: BlopsSystem,
+    /// The target B (cyno destination).
+    pub to: BlopsSystem,
+    /// Light-year distance of the bridge jump ★→B, rounded to two decimals.
+    pub jump_ly: f64,
+    /// True iff `jump_ly` is within the effective bridge range.
+    pub in_range: bool,
+}
+
+/// A fallback staging candidate: the system, its gate distance from A, and its
+/// light-year gap to B.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BlopsCandidate {
+    pub system: BlopsSystem,
+    pub gate_jumps: usize,
+    /// Light-year distance of the bridge jump from this candidate to B,
+    /// rounded to two decimals.
+    pub ly_to_b: f64,
+}
+
+/// A system named in a blops response: id, name, and security class.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BlopsSystem {
+    pub system: String,
+    pub system_id: i64,
+    pub security: f32,
+    pub sec_class: String,
+}
+
 /// Response body for `GET /health`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct HealthResponse {
@@ -168,6 +300,35 @@ mod tests {
         assert!(!req.use_wormholes);
         assert!(req.connections.is_empty());
         assert!(!req.include_thera && !req.include_turnur && !req.include_zarzakh);
+    }
+
+    #[test]
+    fn ship_ref_accepts_name_or_id() {
+        let by_name: ShipRef = serde_json::from_str("\"Sin\"").unwrap();
+        assert!(matches!(by_name, ShipRef::Name(n) if n == "Sin"));
+        let by_id: ShipRef = serde_json::from_str("22430").unwrap();
+        assert!(matches!(by_id, ShipRef::Id(22430)));
+    }
+
+    #[test]
+    fn blops_request_defaults_jdc_and_omits_ship() {
+        let req: BlopsRouteRequest =
+            serde_json::from_str(r#"{"from":"B-E3KQ","to":"Otanuomi"}"#).unwrap();
+        assert!(req.ship.is_none(), "ship defaults to None");
+        assert_eq!(req.jdc_level, 5, "jdc_level defaults to maxed (5)");
+        assert!(matches!(req.preference, RoutePreference::Shortest));
+        assert!(req.avoid.is_empty());
+        assert!(!req.use_wormholes && req.connections.is_empty());
+        assert!(!req.include_thera && !req.include_turnur && !req.include_zarzakh);
+    }
+
+    #[test]
+    fn blops_request_accepts_explicit_ship_and_jdc() {
+        let req: BlopsRouteRequest =
+            serde_json::from_str(r#"{"from":"B-E3KQ","to":"Otanuomi","ship":22430,"jdc_level":3}"#)
+                .unwrap();
+        assert!(matches!(req.ship, Some(ShipRef::Id(22430))));
+        assert_eq!(req.jdc_level, 3);
     }
 
     #[test]

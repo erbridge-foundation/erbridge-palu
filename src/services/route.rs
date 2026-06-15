@@ -16,6 +16,31 @@ use crate::routing::{Path, Preference, RouteContext, shortest_path, with_scratch
 /// from transit by default (added to the avoid set unless opted in).
 pub const ZARZAKH_SYSTEM_ID: i64 = 30100000;
 
+/// A view of the routing knobs shared by every endpoint that drives the gate
+/// graph (system routing and blops staging). Both request DTOs project into
+/// this so the overlay/avoid-set assembly lives in one place.
+pub struct OverlayInputs<'a> {
+    pub avoid: &'a [SystemRef],
+    pub include_zarzakh: bool,
+    pub use_wormholes: bool,
+    pub connections: &'a [crate::dto::WhConnection],
+    pub include_thera: bool,
+    pub include_turnur: bool,
+}
+
+impl<'a> From<&'a GateRouteRequest> for OverlayInputs<'a> {
+    fn from(r: &'a GateRouteRequest) -> Self {
+        Self {
+            avoid: &r.avoid,
+            include_zarzakh: r.include_zarzakh,
+            use_wormholes: r.use_wormholes,
+            connections: &r.connections,
+            include_thera: r.include_thera,
+            include_turnur: r.include_turnur,
+        }
+    }
+}
+
 /// Compute a gate route for `req` over `graph`, drawing EVE-Scout overlay edges
 /// from `scout`. Pure given its inputs — the handler supplies the per-request
 /// snapshots so this stays testable without HTTP or shared state.
@@ -29,7 +54,8 @@ pub fn compute_gate_route(
     let from = resolve_system(graph, &req.from)?;
     let to = resolve_system(graph, &req.to)?;
 
-    let mut avoid = assemble_avoid_set(graph, req)?;
+    let inputs = OverlayInputs::from(req);
+    let mut avoid = assemble_avoid_set(graph, &inputs)?;
     // The avoid set is about *transit*: the route's own endpoints are never
     // transit hops, so a system is usable as `from`/`to` even when it would
     // otherwise be excluded (e.g. Zarzakh by default, or a user-avoided system).
@@ -37,7 +63,7 @@ pub fn compute_gate_route(
     avoid.remove(&to);
     let mut ctx = RouteContext::new(graph, avoid, preference);
 
-    apply_overlay(graph, scout, req, from, to, &mut ctx)?;
+    apply_overlay(graph, scout, &inputs, &[from, to], &mut ctx)?;
 
     let path = with_scratch(|scratch| shortest_path(&ctx, from, to, scratch))
         .ok_or(AppError::Unreachable)?;
@@ -47,16 +73,17 @@ pub fn compute_gate_route(
 
 /// User `avoid[]` ∪ Zarzakh (unless `include_zarzakh`). Zarzakh is added only
 /// when the SDE actually contains it, so a fixture without it is unaffected.
-fn assemble_avoid_set(
+/// Shared by the system-route and blops-staging services.
+pub fn assemble_avoid_set(
     graph: &GraphData,
-    req: &GateRouteRequest,
+    inputs: &OverlayInputs<'_>,
 ) -> Result<FxHashSet<NodeIndex>, AppError> {
-    let mut avoid = req
+    let mut avoid = inputs
         .avoid
         .iter()
         .map(|r| resolve_system(graph, r))
         .collect::<Result<FxHashSet<_>, _>>()?;
-    if !req.include_zarzakh
+    if !inputs.include_zarzakh
         && let Some(&zar) = graph.id_to_idx.get(&ZARZAKH_SYSTEM_ID)
     {
         avoid.insert(zar);
@@ -68,20 +95,21 @@ fn assemble_avoid_set(
 /// Thera/Turnur signatures. Expired sigs are dropped here.
 ///
 /// A hub's signatures are added when its `include_*` flag is set OR when that
-/// hub is the route's own `from`/`to`. The flag governs using the hub as a
-/// mid-route shortcut; reaching the hub as an endpoint must not require opting
+/// hub is one of the route's own `endpoints`. The flag governs using the hub as
+/// a mid-route shortcut; reaching the hub as an endpoint must not require opting
 /// in — Thera in particular is a gateless wormhole, so without its sigs it would
-/// be unreachable as a source or destination.
-fn apply_overlay(
+/// be unreachable as a source or destination. Shared by both services;
+/// `endpoints` is the set of nodes exempt from the include-flag requirement
+/// (the system route's `from`/`to`; for blops, A and B).
+pub fn apply_overlay(
     graph: &GraphData,
     scout: &EveScoutSnapshot,
-    req: &GateRouteRequest,
-    from: NodeIndex,
-    to: NodeIndex,
+    inputs: &OverlayInputs<'_>,
+    endpoints: &[NodeIndex],
     ctx: &mut RouteContext<'_>,
 ) -> Result<(), AppError> {
-    if req.use_wormholes {
-        for c in &req.connections {
+    if inputs.use_wormholes {
+        for c in inputs.connections {
             let a = resolve_system(graph, &c.from)?;
             let b = resolve_system(graph, &c.to)?;
             ctx.add_connection(a, b);
@@ -93,12 +121,12 @@ fn apply_overlay(
         graph
             .id_to_idx
             .get(&hub_id)
-            .is_some_and(|&idx| idx == from || idx == to)
+            .is_some_and(|&idx| endpoints.contains(&idx))
     };
-    if req.include_thera || is_endpoint(eve_scout::THERA_SYSTEM_ID) {
+    if inputs.include_thera || is_endpoint(eve_scout::THERA_SYSTEM_ID) {
         add_scout_edges(graph, ctx, &scout.thera, now);
     }
-    if req.include_turnur || is_endpoint(eve_scout::TURNUR_SYSTEM_ID) {
+    if inputs.include_turnur || is_endpoint(eve_scout::TURNUR_SYSTEM_ID) {
         add_scout_edges(graph, ctx, &scout.turnur, now);
     }
     Ok(())
@@ -128,7 +156,7 @@ fn add_scout_edges(
 }
 
 /// Resolve a system reference to its node index, case-insensitively for names.
-fn resolve_system(graph: &GraphData, r: &SystemRef) -> Result<NodeIndex, AppError> {
+pub fn resolve_system(graph: &GraphData, r: &SystemRef) -> Result<NodeIndex, AppError> {
     match r {
         SystemRef::Id(id) => graph
             .id_to_idx
@@ -143,9 +171,10 @@ fn resolve_system(graph: &GraphData, r: &SystemRef) -> Result<NodeIndex, AppErro
     }
 }
 
-fn build_response(graph: &GraphData, ctx: &RouteContext<'_>, path: &Path) -> GateRouteResponse {
-    let steps: Vec<RouteStep> = path
-        .iter()
+/// Turn a node path into labelled `RouteStep`s (`start` / `stargate` /
+/// `wormhole`). Shared so the blops gate leg labels steps identically.
+pub fn build_steps(graph: &GraphData, ctx: &RouteContext<'_>, path: &Path) -> Vec<RouteStep> {
+    path.iter()
         .enumerate()
         .map(|(i, idx)| {
             let s = &graph.systems[idx.index()];
@@ -162,7 +191,11 @@ fn build_response(graph: &GraphData, ctx: &RouteContext<'_>, path: &Path) -> Gat
                 via: via.to_string(),
             }
         })
-        .collect();
+        .collect()
+}
+
+fn build_response(graph: &GraphData, ctx: &RouteContext<'_>, path: &Path) -> GateRouteResponse {
+    let steps = build_steps(graph, ctx, path);
     // jumps = edges traversed = path.len() - 1 (0 for a same-system route).
     let jumps = path.len().saturating_sub(1);
     GateRouteResponse { jumps, path: steps }
