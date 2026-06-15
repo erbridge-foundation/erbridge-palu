@@ -40,7 +40,7 @@ jobs:
     # PAT-opened PR triggers the normal `backend` checks, which is the point.
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install just
         uses: extractions/setup-just@v2

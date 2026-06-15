@@ -1,6 +1,6 @@
 # erbridge-palu
 
-[![Build](https://github.com/erbridge-foundation/erbridge-palu/actions/workflows/backend.yml/badge.svg)](https://github.com/erbridge-foundation/erbridge-palu/actions/workflows/backend.yml)
+[![Build](https://github.com/erbridge-foundation/erbridge-palu/actions/workflows/palu.yml/badge.svg)](https://github.com/erbridge-foundation/erbridge-palu/actions/workflows/palu.yml)
 
 ---
 
