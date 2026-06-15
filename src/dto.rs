@@ -184,6 +184,12 @@ pub struct BlopsRouteRequest {
 /// ranked fallback candidates and the echoed bridge parameters.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BlopsRouteResponse {
+    /// The JDC level used (echoed; reflects the default when omitted).
+    pub jdc_level: u8,
+    /// The effective bridge range in light-years used for the radius query.
+    pub effective_ly: f64,
+    /// True when the worst-Black-Ops-hull default was applied (no `ship` given).
+    pub defaulted: bool,
     /// The chosen staging route: gate path A→★ and the bridge leg ★→B.
     pub chosen: BlopsChosen,
     /// Next-best in-range staging candidates beyond ★, ranked the same way
@@ -191,21 +197,15 @@ pub struct BlopsRouteResponse {
     /// when ★ is reached in zero gate jumps (the fleet is already in bridge
     /// range, so there is nothing to fall back to).
     pub alternates: Vec<BlopsCandidate>,
-    /// The JDC level used (echoed; reflects the default when omitted).
-    pub jdc_level: u8,
-    /// The effective bridge range in light-years used for the radius query.
-    pub effective_ly: f64,
-    /// True when the worst-Black-Ops-hull default was applied (no `ship` given).
-    pub defaulted: bool,
 }
 
 /// The chosen staging route: the gate path to ★ and the bridge leg ★→B.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BlopsChosen {
-    /// Gate route from A to the staging system ★ (inclusive of both ends).
-    pub gate_path: Vec<RouteStep>,
     /// Gate jumps from A to ★ (`gate_path.len() - 1`).
     pub gate_jumps: usize,
+    /// Gate route from A to the staging system ★ (inclusive of both ends).
+    pub gate_path: Vec<RouteStep>,
     /// The bridge leg from ★ to the target B.
     pub bridge: BlopsBridge,
 }
@@ -274,16 +274,16 @@ pub struct RangeRequest {
 /// summary count) is a valid 200 answer, not an error.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RangeResponse {
-    /// The source system the jump originates from.
-    pub source: RangeSystem,
-    /// The resolved jumping hull and its base range.
-    pub hull: RangeHull,
+    /// Aggregate view of the reachable set.
+    pub summary: RangeSummary,
     /// The JDC level used (echoed from the request).
     pub jdc_level: u8,
     /// The effective jump range in light-years used for the radius query.
     pub effective_ly: f64,
-    /// Aggregate view of the reachable set.
-    pub summary: RangeSummary,
+    /// The source system the jump originates from.
+    pub source: RangeSystem,
+    /// The resolved jumping hull and its base range.
+    pub hull: RangeHull,
     /// Reachable systems, sorted by ascending light-year distance from `source`.
     pub reachable: Vec<RangeReachable>,
 }
