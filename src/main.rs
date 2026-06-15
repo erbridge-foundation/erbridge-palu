@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Context;
-use tracing::info;
+use tracing::{info, warn};
 
 use erbridge_palu::app_state::AppState;
 use erbridge_palu::config;
@@ -89,15 +89,25 @@ async fn shutdown_signal() {
     use tokio::signal;
 
     let ctrl_c = async {
-        signal::ctrl_c().await.expect("install Ctrl-C handler");
+        if let Err(err) = signal::ctrl_c().await {
+            warn!("failed to install Ctrl-C handler: {err}");
+            // Never resolve: fall back to SIGTERM (or run until killed) rather
+            // than treating a handler-install failure as a shutdown request.
+            std::future::pending::<()>().await;
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("install SIGTERM handler")
-            .recv()
-            .await;
+        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                sigterm.recv().await;
+            }
+            Err(err) => {
+                warn!("failed to install SIGTERM handler: {err}");
+                std::future::pending::<()>().await;
+            }
+        }
     };
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
