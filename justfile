@@ -52,7 +52,12 @@ run:
 
 # Run the service offline against the checked-in SDE fixture
 run-fixture port="5001":
-    PALU_SDE_DIR="$PWD/tests/fixtures/sde/1" \
+    #!/usr/bin/env sh
+    set -e
+    # Resolve the build-number subdir from the committed manifest so this keeps
+    # working after a fixture refresh bumps the build number.
+    build="$(sed -n 's/.*"buildNumber": *\([0-9]*\).*/\1/p' tests/fixtures/sde/latest.jsonl)"
+    PALU_SDE_DIR="$PWD/tests/fixtures/sde/${build}" \
     PALU_EVE_SCOUT_INTERVAL_SECS=0 \
     PALU_PORT={{port}} \
         cargo run
