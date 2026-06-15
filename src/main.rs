@@ -77,5 +77,36 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("failed to bind to {addr}"))?;
     info!(%addr, "listening");
 
-    axum::serve(listener, app).await.context("server error")
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .context("server error")
+}
+
+/// Resolve when SIGINT (Ctrl-C) or SIGTERM (container stop) arrives, so axum can
+/// stop accepting and drain in-flight requests before the process exits.
+async fn shutdown_signal() {
+    use tokio::signal;
+
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("install Ctrl-C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    info!("shutdown signal received, draining in-flight requests");
 }
