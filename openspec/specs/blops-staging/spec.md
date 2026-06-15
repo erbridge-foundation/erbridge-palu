@@ -59,7 +59,9 @@ The endpoint SHALL resolve an effective bridge range from the hull's base range 
 the JDC level. When `ship` is omitted, it SHALL default to the worst (shortest-base)
 black-ops hull, taken as the catalog minimum over the Black Ops group rather than a
 hardcoded value. When `jdc_level` is omitted, it SHALL default to 5. A `jdc_level`
-outside 0..5 SHALL be rejected. The response SHALL echo the `jdc_level` and
+outside 1..=5 SHALL be rejected: every jump-capable hull requires Jump Drive
+Calibration level 1 at a minimum, so a `jdc_level` of `0` SHALL be rejected, as SHALL a
+level greater than 5. The response SHALL echo the `jdc_level` and
 `effective_ly` used and SHALL indicate whether the worst-hull default was applied.
 
 #### Scenario: Worst-hull default when no ship given
@@ -76,7 +78,7 @@ outside 0..5 SHALL be rejected. The response SHALL echo the `jdc_level` and
 
 #### Scenario: Out-of-range JDC is rejected
 
-- **WHEN** `jdc_level` is greater than 5 (or negative)
+- **WHEN** `jdc_level` is `0` or is greater than 5
 - **THEN** the request is rejected with a validation error rather than being clamped
 
 ### Requirement: Staging candidate selection and ranking
