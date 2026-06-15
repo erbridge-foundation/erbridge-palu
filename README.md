@@ -68,6 +68,7 @@ cache in a named volume. It has no auth — keep it on a trusted network.
 | Method | Path                     | Description                          |
 |--------|--------------------------|--------------------------------------|
 | POST   | `/api/v1/route/system`   | Compute a system-to-system route     |
+| POST   | `/api/v1/route/blops`    | Stage a fleet into bridge range of a cyno target |
 | GET    | `/health`                | SDE version, graph size, freshness   |
 | GET    | `/swagger-ui`            | Interactive API docs                 |
 | GET    | `/api-docs/openapi.json` | OpenAPI 3.1 document                 |
@@ -120,6 +121,80 @@ Preferences:
 
 Each path step's `via` is `start`, `stargate`, or `wormhole`. A real gate always
 labels `stargate` even if a wormhole also connects the same pair.
+
+### `POST /api/v1/route/blops`
+
+Black-ops staging: given a fleet location `from` (**A**) and a fixed cyno target
+`to` (**B**), find the fewest-gate-jump system **★** that is within bridge range
+of B, return the gate route A→★, and describe the bridge leg ★→B. Use it to
+answer "where do I move the fleet so it can bridge onto the target?".
+
+The bridge range is derived from the hull and Jump Drive Calibration level: when
+`ship` is omitted it defaults to the worst (shortest-range) Black Ops hull, and
+`jdc_level` defaults to `5`. The A→★ gate leg honours the same `preference`,
+`avoid`, and wormhole-overlay knobs as `/route/system`.
+
+```sh
+curl -s localhost:5001/api/v1/route/blops \
+  -H 'content-type: application/json' \
+  -d '{"from": "B-E3KQ", "to": "Otanuomi", "ship": "Sin", "jdc_level": 5}'
+```
+
+```json
+{
+  "chosen": {
+    "gate_path": [
+      { "system": "B-E3KQ", "system_id": 30000307, "security": -0.26, "sec_class": "Nullsec", "via": "start" },
+      { "system": "5T-KM3", "system_id": 30000299, "security": -0.17, "sec_class": "Nullsec", "via": "stargate" },
+      { "system": "0R-F2F", "system_id": 30000290, "security": -0.31, "sec_class": "Nullsec", "via": "stargate" }
+    ],
+    "gate_jumps": 2,
+    "bridge": {
+      "from": { "system": "0R-F2F", "system_id": 30000290, "security": -0.31, "sec_class": "Nullsec" },
+      "to":   { "system": "Otanuomi", "system_id": 30000192, "security": -1.0, "sec_class": "Nullsec" },
+      "jump_ly": 5.81,
+      "in_range": true
+    }
+  },
+  "alternates": [
+    { "system": { "system": "2DWM-2", "system_id": 30000292, "security": -0.2, "sec_class": "Nullsec" }, "gate_jumps": 3, "ly_to_b": 5.48 }
+  ],
+  "jdc_level": 5,
+  "effective_ly": 8.0,
+  "defaulted": false
+}
+```
+
+(`alternates` is truncated to one entry here; the real response lists every
+in-range candidate, ranked by fewest gate jumps then closest to B.)
+
+Request fields (A→★ leg shares `preference`, `avoid`, `use_wormholes`,
+`connections`, `include_thera`, `include_turnur`, `include_zarzakh` with
+`/route/system` above):
+
+| Field        | Type           | Default          | Notes                                                              |
+|--------------|----------------|------------------|--------------------------------------------------------------------|
+| `from`, `to` | name or id     | (required)       | A (fleet) and B (cyno target). Unknown system → `400`              |
+| `ship`       | hull name or id | worst Black Ops hull | The bridging hull. Unknown hull → `400`                       |
+| `jdc_level`  | int `0..=5`    | `5`              | Jump Drive Calibration; out-of-range → `400` (not clamped)         |
+
+Response fields:
+
+| Field          | Notes                                                                         |
+|----------------|-------------------------------------------------------------------------------|
+| `chosen`       | The picked route: `gate_path` (A→★, inclusive), `gate_jumps`, and the `bridge` leg |
+| `bridge`       | `from` (★), `to` (B), `jump_ly` (★→B distance, 2 dp), `in_range`               |
+| `alternates`   | Next-best in-range staging systems, ranked the same way; empty when ★ is reached in zero jumps |
+| `jdc_level`    | The JDC level used (echoes the default when omitted)                           |
+| `effective_ly` | The bridge range in light-years used for the radius query                      |
+| `defaulted`    | `true` when the worst-Black-Ops-hull default was applied (no `ship` given)     |
+
+When the fleet is already in bridge range, ★ is `from` itself at zero gate jumps
+and `alternates` is empty. The cyno target B may **not** be in highsec — a
+highsec B yields a distinct `400` (only the bridge destination is restricted; ★
+may be highsec). Responses: `200` with the staging route, `400` for an unknown
+system/hull, invalid `jdc_level`, or a highsec target, and `404` when no in-range
+or gate-reachable staging system exists.
 
 ### Wormhole overlays
 
