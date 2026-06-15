@@ -69,6 +69,7 @@ cache in a named volume. It has no auth — keep it on a trusted network.
 |--------|--------------------------|--------------------------------------|
 | POST   | `/api/v1/route/system`   | Compute a system-to-system route     |
 | POST   | `/api/v1/route/blops`    | Stage a fleet into bridge range of a cyno target |
+| POST   | `/api/v1/route/range`    | List every system reachable in one jump from a source |
 | GET    | `/health`                | SDE version, graph size, freshness   |
 | GET    | `/swagger-ui`            | Interactive API docs                 |
 | GET    | `/api-docs/openapi.json` | OpenAPI 3.1 document                 |
@@ -176,7 +177,7 @@ Request fields (A→★ leg shares `preference`, `avoid`, `use_wormholes`,
 |--------------|----------------|------------------|--------------------------------------------------------------------|
 | `from`, `to` | name or id     | (required)       | A (fleet) and B (cyno target). Unknown system → `400`              |
 | `ship`       | hull name or id | worst Black Ops hull | The bridging hull. Unknown hull → `400`                       |
-| `jdc_level`  | int `0..=5`    | `5`              | Jump Drive Calibration; out-of-range → `400` (not clamped)         |
+| `jdc_level`  | int `1..=5`    | `5`              | Jump Drive Calibration; out-of-range → `400` (not clamped)         |
 
 Response fields:
 
@@ -195,6 +196,75 @@ highsec B yields a distinct `400` (only the bridge destination is restricted; �
 may be highsec). Responses: `200` with the staging route, `400` for an unknown
 system/hull, invalid `jdc_level`, or a highsec target, and `404` when no in-range
 or gate-reachable staging system exists.
+
+### `POST /api/v1/route/range`
+
+Jump-range reachability: given a source system `from`, a hull `ship`, and a
+`jdc_level`, list **every system reachable in a single jump** — the spatial
+fan-out, sorted nearest-first, with a summary. Use it to answer "from here, with
+this hull and these skills, where can I land?".
+
+This endpoint is **planning-oriented**, so it differs from `/route/blops` on
+purpose:
+
+- `ship` and `jdc_level` are **required** — there is no worst-hull or
+  default-level fallback (a planning answer must be explicit, not assumed).
+- There is **no gate or wormhole overlay** — a jump ignores gates, so `avoid`,
+  `connections`, and `include_zarzakh` are not accepted.
+- An empty reachable set is a valid **`200`** with `reachable: []`, not a `404`.
+
+The reachable set excludes wormhole (J-space) systems, **highsec** (a cyno cannot
+be lit in highsec, so no jump may land there), and the source system itself.
+
+```sh
+curl -s localhost:5001/api/v1/route/range \
+  -H 'content-type: application/json' \
+  -d '{"from": "Otanuomi", "ship": "Sin", "jdc_level": 5}'
+```
+
+```json
+{
+  "source": { "system": "Otanuomi", "system_id": 30000192, "security": -1.0, "sec_class": "Nullsec" },
+  "hull": { "name": "Sin", "type_id": 22430, "base_ly": 4.0 },
+  "jdc_level": 5,
+  "effective_ly": 8.0,
+  "summary": {
+    "reachable_count": 23,
+    "farthest_ly": 7.98,
+    "by_sec_class": { "Lowsec": 4, "Nullsec": 19 }
+  },
+  "reachable": [
+    { "system": "0R-F2F", "system_id": 30000290, "security": -0.31, "sec_class": "Nullsec", "jump_ly": 5.81 }
+  ]
+}
+```
+
+(`reachable` is truncated to one entry here; the real response lists every
+in-range system, sorted ascending by `jump_ly`. `summary` figures are
+illustrative.)
+
+Request fields:
+
+| Field       | Type            | Default    | Notes                                                       |
+|-------------|-----------------|------------|-------------------------------------------------------------|
+| `from`      | name or id      | (required) | Source system. Unknown system → `400`                       |
+| `ship`      | hull name or id | (required) | Jumping hull. Unknown hull → `400`; missing → `422`         |
+| `jdc_level` | int `1..=5`     | (required) | Jump Drive Calibration; `0`/out-of-range → `400`; missing → `422` |
+
+Response fields:
+
+| Field          | Notes                                                                            |
+|----------------|----------------------------------------------------------------------------------|
+| `source`       | The source system the jump originates from                                       |
+| `hull`         | The resolved hull: `name`, `type_id`, `base_ly` (range before the JDC bonus)     |
+| `jdc_level`    | The JDC level used (echoed from the request)                                      |
+| `effective_ly` | The effective jump range in light-years used for the radius query                 |
+| `summary`      | `reachable_count`, `farthest_ly` (2 dp), and `by_sec_class` (count per class)     |
+| `reachable`    | Reachable systems sorted ascending by `jump_ly` (2 dp); never includes highsec or the source |
+
+Responses: `200` with the reachable set (possibly empty), `400` for an unknown
+system/hull or a `jdc_level` outside `1..=5`, and `422` when a required field
+(`ship`/`jdc_level`) is missing from the body.
 
 ### Wormhole overlays
 

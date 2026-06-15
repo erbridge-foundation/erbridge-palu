@@ -533,11 +533,13 @@ async fn blops_highsec_target_is_rejected() {
 
 #[tokio::test]
 async fn blops_no_candidate_in_range_is_404() {
-    // J105443 (a J-space system) at JDC 0 (Sin 4.0 LY) has no K-space staging
+    // J105443 (a J-space system) at JDC 1 (Sin 4.8 LY) has no K-space staging
     // system within range → distinct no_staging_in_range, not unreachable.
+    // (J-space coordinates sit far from the K-space cluster, so even a maxed
+    // bridge would not reach; JDC 1 is the minimum valid level.)
     let (status, body) = post_blops(
         fixture_state(),
-        serde_json::json!({ "from": "Jita", "to": "J105443", "ship": "Sin", "jdc_level": 0 }),
+        serde_json::json!({ "from": "Jita", "to": "J105443", "ship": "Sin", "jdc_level": 1 }),
     )
     .await;
     assert_eq!(status, 404, "body={body}");
@@ -577,6 +579,162 @@ async fn blops_accepts_numeric_system_and_hull_ids() {
     .await;
     assert_eq!(status, 200, "body={body}");
     assert_eq!(body["chosen"]["bridge"]["from"]["system"], "0R-F2F");
+}
+
+// ── jump-range reachability (fan-out over the full SDE fixture) ───────────────
+//
+// Pinned in-fixture example: from Otanuomi (nullsec), a Sin at JDC 5 (effective
+// range 8.0 LY) reaches a set of nearby K-space systems including 0R-F2F (~5.81
+// LY — the same pair the blops staging test pins). No gate routing is involved;
+// this is a pure spatial fan-out.
+
+#[tokio::test]
+async fn range_happy_path_lists_reachable_systems() {
+    let (status, body) = post_range(
+        fixture_state(),
+        serde_json::json!({ "from": "Otanuomi", "ship": "Sin", "jdc_level": 5 }),
+    )
+    .await;
+    assert_eq!(status, 200, "body={body}");
+    // Echoed inputs: Sin 4.0 base × (1 + 0.20×5) = 8.0 LY.
+    assert_eq!(body["effective_ly"], 8.0);
+    assert_eq!(body["jdc_level"], 5);
+    assert_eq!(body["hull"]["name"], "Sin");
+    assert_eq!(body["hull"]["type_id"], 22430);
+    assert_eq!(body["hull"]["base_ly"], 4.0);
+    assert_eq!(body["source"]["system"], "Otanuomi");
+
+    let reachable = body["reachable"].as_array().unwrap();
+    assert!(!reachable.is_empty(), "Otanuomi reaches systems at 8 LY");
+    // The source is never listed among the reachable systems.
+    assert!(
+        reachable.iter().all(|r| r["system"] != "Otanuomi"),
+        "source excluded from its own reachable set"
+    );
+    // 0R-F2F (the blops staging pin, ~5.81 LY) is reachable.
+    let zero_r = reachable
+        .iter()
+        .find(|r| r["system"] == "0R-F2F")
+        .expect("0R-F2F within 8 LY of Otanuomi");
+    assert_eq!(zero_r["jump_ly"], 5.81, "pinned rounded jump distance");
+    // Sorted ascending by jump distance.
+    let lys: Vec<f64> = reachable
+        .iter()
+        .map(|r| r["jump_ly"].as_f64().unwrap())
+        .collect();
+    assert!(lys.windows(2).all(|w| w[0] <= w[1]), "sorted ascending");
+    // No highsec system appears (a cyno cannot be lit in highsec).
+    assert!(
+        reachable.iter().all(|r| r["sec_class"] != "Highsec"),
+        "highsec destinations excluded"
+    );
+
+    // Summary agrees with the list.
+    let summary = &body["summary"];
+    assert_eq!(
+        summary["reachable_count"].as_u64().unwrap() as usize,
+        reachable.len()
+    );
+    assert_eq!(
+        summary["farthest_ly"].as_f64().unwrap(),
+        *lys.last().unwrap()
+    );
+    assert!(summary["by_sec_class"].get("Highsec").is_none());
+}
+
+#[tokio::test]
+async fn range_excludes_highsec_and_summary_omits_it() {
+    // From a highsec hub (Jita), a Sin at JDC 5 covers a dense neighbourhood —
+    // but every reachable system must be K-space and non-highsec, even though
+    // Jita itself sits among highsec systems.
+    let (status, body) = post_range(
+        fixture_state(),
+        serde_json::json!({ "from": "Jita", "ship": "Sin", "jdc_level": 5 }),
+    )
+    .await;
+    assert_eq!(status, 200, "body={body}");
+    let reachable = body["reachable"].as_array().unwrap();
+    assert!(
+        reachable.iter().all(|r| r["sec_class"] != "Highsec"),
+        "no highsec system is reachable (cyno rule)"
+    );
+    assert!(body["summary"]["by_sec_class"].get("Highsec").is_none());
+}
+
+#[tokio::test]
+async fn range_missing_required_field_is_rejected() {
+    // `ship` and `jdc_level` are required. A missing required field fails at the
+    // JSON extractor (axum returns 422 Unprocessable Entity for a body that does
+    // not deserialize), distinct from a present-but-invalid value which is our
+    // own 400. Either way the request is rejected, never silently defaulted.
+    let (no_jdc, _) = post_range(
+        fixture_state(),
+        serde_json::json!({ "from": "Otanuomi", "ship": "Sin" }),
+    )
+    .await;
+    assert_eq!(no_jdc, 422, "missing jdc_level rejected by the extractor");
+
+    let (no_ship, _) = post_range(
+        fixture_state(),
+        serde_json::json!({ "from": "Otanuomi", "jdc_level": 5 }),
+    )
+    .await;
+    assert_eq!(no_ship, 422, "missing ship rejected by the extractor");
+}
+
+#[tokio::test]
+async fn range_jdc_zero_is_400() {
+    // Every jump-capable hull requires JDC 1; 0 is rejected.
+    let (status, body) = post_range(
+        fixture_state(),
+        serde_json::json!({ "from": "Otanuomi", "ship": "Sin", "jdc_level": 0 }),
+    )
+    .await;
+    assert_eq!(status, 400, "body={body}");
+    assert_eq!(body["error"], "invalid_param");
+}
+
+#[tokio::test]
+async fn range_unknown_hull_is_400() {
+    let (status, body) = post_range(
+        fixture_state(),
+        serde_json::json!({ "from": "Otanuomi", "ship": "Rifter", "jdc_level": 5 }),
+    )
+    .await;
+    assert_eq!(status, 400, "body={body}");
+    assert_eq!(body["error"], "unknown_hull");
+}
+
+#[tokio::test]
+async fn range_accepts_numeric_system_and_hull_ids() {
+    // Otanuomi = 30000192, Sin = 22430. Numeric forms resolve identically.
+    let (status, body) = post_range(
+        fixture_state(),
+        serde_json::json!({ "from": 30000192_i64, "ship": 22430_i64, "jdc_level": 5 }),
+    )
+    .await;
+    assert_eq!(status, 200, "body={body}");
+    assert_eq!(body["hull"]["name"], "Sin");
+    assert_eq!(body["source"]["system"], "Otanuomi");
+}
+
+async fn post_range(state: AppState, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+    let app = build_router(state);
+    let req = Request::builder()
+        .uri("/api/v1/route/range")
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let json = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    };
+    (status, json)
 }
 
 async fn post_blops(state: AppState, body: serde_json::Value) -> (StatusCode, serde_json::Value) {

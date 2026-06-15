@@ -79,10 +79,16 @@ pub struct RawHullCatalog {
     pub jdc_bonus_per_level: Option<f64>,
 }
 
-/// An entry in the hull catalog: a jump-capable hull's base range and group.
+/// An entry in the hull catalog: a jump-capable hull's identity, base range,
+/// and group. Self-describing so a lookup by name or typeID can echo the
+/// resolved hull back (canonical name + typeID), not just its range.
 /// Mechanic-agnostic — no jump/bridge/conduit logic, just the SDE facts.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HullEntry {
+    /// Canonical hull name as it appears in the SDE `types` dataset.
+    pub name: String,
+    /// SDE typeID.
+    pub type_id: i64,
     /// Base jump range in light-years (SDE attribute 867).
     pub base_ly: f64,
     pub group_id: i64,
@@ -119,10 +125,12 @@ impl HullCatalog {
         let mut min_base_ly_by_group: FxHashMap<i64, f64> = FxHashMap::default();
         for hull in &raw.hulls {
             let entry = HullEntry {
+                name: hull.name.clone(),
+                type_id: hull.type_id,
                 base_ly: hull.base_ly,
                 group_id: hull.group_id,
             };
-            by_name.insert(hull.name.to_ascii_lowercase(), entry);
+            by_name.insert(hull.name.to_ascii_lowercase(), entry.clone());
             by_type_id.insert(hull.type_id, entry);
             min_base_ly_by_group
                 .entry(hull.group_id)
@@ -153,12 +161,12 @@ impl HullCatalog {
 
     /// Look up a hull by case-insensitive name.
     pub fn by_name(&self, name: &str) -> Option<HullEntry> {
-        self.by_name.get(&name.to_ascii_lowercase()).copied()
+        self.by_name.get(&name.to_ascii_lowercase()).cloned()
     }
 
     /// Look up a hull by typeID.
     pub fn by_type_id(&self, type_id: i64) -> Option<HullEntry> {
-        self.by_type_id.get(&type_id).copied()
+        self.by_type_id.get(&type_id).cloned()
     }
 
     /// The minimum base range (light-years) over a `groupID`, computed at

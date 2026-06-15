@@ -3,4 +3,5 @@
 //! `AppError`, and the handler layer maps those to HTTP.
 
 pub mod blops;
+pub mod range;
 pub mod route;

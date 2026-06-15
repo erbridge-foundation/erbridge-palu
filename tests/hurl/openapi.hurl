@@ -7,6 +7,7 @@ header "Content-Type" contains "application/json"
 jsonpath "$.openapi" startsWith "3."
 jsonpath "$.paths['/api/v1/route/system']" exists
 jsonpath "$.paths['/api/v1/route/blops']" exists
+jsonpath "$.paths['/api/v1/route/range']" exists
 jsonpath "$.paths['/health']" exists
 
 

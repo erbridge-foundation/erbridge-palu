@@ -51,6 +51,7 @@ pub fn build_router(state: AppState) -> Router {
     let (router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .routes(routes!(handlers::route::route_system))
         .routes(routes!(handlers::route::route_blops))
+        .routes(routes!(handlers::route::route_range))
         .routes(routes!(handlers::health::health))
         .split_for_parts();
 
@@ -92,17 +93,19 @@ mod tests {
         ));
         let state = AppState::new(graph);
         // Building the router wires every annotated handler plus the Swagger UI;
-        // its OpenApi must then describe all three endpoints (the blops staging
-        // path is the one added by this change).
+        // its OpenApi must then describe all endpoints (the range fan-out path is
+        // the one added by this change).
         let (_router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
             .routes(routes!(handlers::route::route_system))
             .routes(routes!(handlers::route::route_blops))
+            .routes(routes!(handlers::route::route_range))
             .routes(routes!(handlers::health::health))
             .split_for_parts();
         let json = serde_json::to_value(&api).unwrap();
         let paths = json["paths"].as_object().unwrap();
         assert!(paths.contains_key("/api/v1/route/system"));
         assert!(paths.contains_key("/api/v1/route/blops"));
+        assert!(paths.contains_key("/api/v1/route/range"));
         assert!(paths.contains_key("/health"));
 
         // The full router still builds without panicking.

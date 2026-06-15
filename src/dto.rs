@@ -148,8 +148,9 @@ pub struct BlopsRouteRequest {
     /// Black Ops hull in the catalog.
     #[serde(default)]
     pub ship: Option<ShipRef>,
-    /// Jump Drive Calibration level (0..=5). Defaults to 5 (maxed). A value
-    /// outside 0..=5 is rejected rather than clamped.
+    /// Jump Drive Calibration level (1..=5). Defaults to 5 (maxed). A value
+    /// outside 1..=5 is rejected rather than clamped (every jump-capable hull
+    /// requires JDC 1 at a minimum).
     #[serde(default = "default_jdc_level")]
     #[schema(default = 5, example = 5)]
     pub jdc_level: u8,
@@ -243,6 +244,94 @@ pub struct BlopsSystem {
     pub sec_class: String,
 }
 
+/// Request body for `POST /api/v1/route/range`. The jump-range reachability
+/// fan-out: "from `from`, with `ship` at `jdc_level`, which systems can I reach
+/// in one jump?". Unlike the blops endpoint this is planning-oriented: `ship`
+/// and `jdc_level` are **required** (no worst-hull or default-level fallback),
+/// and there are no gate/wormhole overlay knobs — a jump ignores gates.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "from": "Otanuomi",
+    "ship": "Sin",
+    "jdc_level": 5
+}))]
+pub struct RangeRequest {
+    /// Source system the jump originates from.
+    pub from: SystemRef,
+    /// Jumping hull, by case-insensitive name or numeric typeID. Required —
+    /// there is no worst-hull default for this endpoint.
+    pub ship: ShipRef,
+    /// Jump Drive Calibration level (1..=5). Required — there is no default.
+    /// Every jump-capable hull requires JDC 1 at a minimum, so `0` (and any
+    /// value above 5) is rejected rather than clamped.
+    #[schema(example = 5)]
+    pub jdc_level: u8,
+}
+
+/// Response body for `POST /api/v1/route/range`: the source, the resolved hull,
+/// the effective range used, a summary, and every reachable system sorted by
+/// ascending light-year distance. An empty `reachable` list (with a zero
+/// summary count) is a valid 200 answer, not an error.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RangeResponse {
+    /// The source system the jump originates from.
+    pub source: RangeSystem,
+    /// The resolved jumping hull and its base range.
+    pub hull: RangeHull,
+    /// The JDC level used (echoed from the request).
+    pub jdc_level: u8,
+    /// The effective jump range in light-years used for the radius query.
+    pub effective_ly: f64,
+    /// Aggregate view of the reachable set.
+    pub summary: RangeSummary,
+    /// Reachable systems, sorted by ascending light-year distance from `source`.
+    pub reachable: Vec<RangeReachable>,
+}
+
+/// The resolved jumping hull echoed in a range response.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RangeHull {
+    pub name: String,
+    pub type_id: i64,
+    /// Base jump range in light-years (SDE attribute 867), before the JDC bonus.
+    pub base_ly: f64,
+}
+
+/// Aggregate summary of a range response's reachable set.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RangeSummary {
+    /// Number of reachable systems.
+    pub reachable_count: usize,
+    /// Light-year distance to the farthest reachable system, rounded to two
+    /// decimals. `0.0` when the set is empty.
+    pub farthest_ly: f64,
+    /// Reachable-system count broken down by security class label
+    /// (`Lowsec`/`Nullsec`/`Wormhole`). Highsec never appears — a cyno cannot
+    /// be lit in highsec, so highsec systems are not reachable.
+    pub by_sec_class: std::collections::BTreeMap<String, usize>,
+}
+
+/// One reachable system in a range response: identity plus the jump distance.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RangeReachable {
+    pub system: String,
+    pub system_id: i64,
+    pub security: f32,
+    pub sec_class: String,
+    /// Light-year distance of the jump from `source` to this system, rounded to
+    /// two decimals.
+    pub jump_ly: f64,
+}
+
+/// A system named in a range response (source or reachable entry header).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RangeSystem {
+    pub system: String,
+    pub system_id: i64,
+    pub security: f32,
+    pub sec_class: String,
+}
+
 /// Response body for `GET /health`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct HealthResponse {
@@ -328,6 +417,32 @@ mod tests {
             serde_json::from_str(r#"{"from":"B-E3KQ","to":"Otanuomi","ship":22430,"jdc_level":3}"#)
                 .unwrap();
         assert!(matches!(req.ship, Some(ShipRef::Id(22430))));
+        assert_eq!(req.jdc_level, 3);
+    }
+
+    #[test]
+    fn range_request_requires_ship_and_jdc() {
+        // A full request parses.
+        let req: RangeRequest =
+            serde_json::from_str(r#"{"from":"Otanuomi","ship":"Sin","jdc_level":5}"#).unwrap();
+        assert!(matches!(req.ship, ShipRef::Name(n) if n == "Sin"));
+        assert_eq!(req.jdc_level, 5);
+        // ship is not optional — omitting it fails to deserialize.
+        assert!(
+            serde_json::from_str::<RangeRequest>(r#"{"from":"Otanuomi","jdc_level":5}"#).is_err()
+        );
+        // jdc_level is not optional either.
+        assert!(
+            serde_json::from_str::<RangeRequest>(r#"{"from":"Otanuomi","ship":"Sin"}"#).is_err()
+        );
+    }
+
+    #[test]
+    fn range_request_accepts_numeric_ids() {
+        let req: RangeRequest =
+            serde_json::from_str(r#"{"from":30003549,"ship":22430,"jdc_level":3}"#).unwrap();
+        assert!(matches!(req.from, SystemRef::Id(30003549)));
+        assert!(matches!(req.ship, ShipRef::Id(22430)));
         assert_eq!(req.jdc_level, 3);
     }
 

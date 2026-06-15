@@ -4,13 +4,15 @@ use axum::{Json, extract::State};
 
 use crate::app_state::AppState;
 use crate::dto::{
-    BlopsRouteRequest, BlopsRouteResponse, GateRouteRequest, GateRouteResponse, ShipRef,
+    BlopsRouteRequest, BlopsRouteResponse, GateRouteRequest, GateRouteResponse, RangeHull,
+    RangeRequest, RangeResponse, ShipRef,
 };
 use crate::error::AppError;
 use crate::model::{GraphData, SecClass, System};
 use crate::range::effective_ly;
 use crate::services::blops::{StagingQuery, compute_staging};
-use crate::services::route::{OverlayInputs, compute_gate_route};
+use crate::services::range::compute_reachable;
+use crate::services::route::{OverlayInputs, compute_gate_route, resolve_system};
 
 /// EVE's Black Ops hull group (`groupID` 898). The worst-hull default is the
 /// catalog minimum base range over this group, not a hardcoded value.
@@ -99,19 +101,63 @@ pub async fn route_blops(
     Ok(Json(resp))
 }
 
+/// Compute the jump-range reachability fan-out: given `from`, a required `ship`,
+/// and a required `jdc_level`, return every K-space, non-highsec system within a
+/// single jump. Planning-oriented — no overlay, and an empty reachable set is a
+/// valid 200 answer rather than an error.
+#[utoipa::path(
+    post,
+    path = "/api/v1/route/range",
+    request_body = RangeRequest,
+    responses(
+        (status = 200, description = "Reachable systems (possibly empty)", body = RangeResponse),
+        (status = 400, description = "Unknown system/hull or jdc_level outside 1..=5"),
+    ),
+    tag = "routing",
+)]
+pub async fn route_range(
+    State(state): State<AppState>,
+    Json(req): Json<RangeRequest>,
+) -> Result<Json<RangeResponse>, AppError> {
+    let graph = state.graph.load();
+
+    validate_jdc_level(req.jdc_level)?;
+    let from = resolve_system(&graph, &req.from)?;
+    let entry = resolve_hull(&graph, &req.ship)?;
+
+    let effective = effective_ly(entry.base_ly, graph.hulls.bonus_per_level(), req.jdc_level);
+    let hull = RangeHull {
+        name: entry.name,
+        type_id: entry.type_id,
+        base_ly: entry.base_ly,
+    };
+
+    let resp = compute_reachable(&graph, from, hull, req.jdc_level, effective);
+    Ok(Json(resp))
+}
+
+/// Validate a required `jdc_level` against the universal rule: every
+/// jump-capable hull requires Jump Drive Calibration level 1 at a minimum, so a
+/// valid level is `1..=5`. `0` and values above 5 are rejected rather than
+/// clamped.
+fn validate_jdc_level(jdc_level: u8) -> Result<(), AppError> {
+    if !(1..=5).contains(&jdc_level) {
+        return Err(AppError::InvalidParam(format!(
+            "jdc_level must be 1..=5, got {jdc_level}"
+        )));
+    }
+    Ok(())
+}
+
 /// Resolve the effective bridge range (LY) and whether the worst-hull default
-/// was applied. Validates `jdc_level` (0..=5) and resolves `ship` against the
+/// was applied. Validates `jdc_level` (1..=5) and resolves `ship` against the
 /// catalog; an omitted ship uses the catalog minimum over the Black Ops group.
 fn resolve_effective_ly(
     graph: &GraphData,
     ship: Option<&ShipRef>,
     jdc_level: u8,
 ) -> Result<(f64, bool), AppError> {
-    if jdc_level > 5 {
-        return Err(AppError::InvalidParam(format!(
-            "jdc_level must be 0..=5, got {jdc_level}"
-        )));
-    }
+    validate_jdc_level(jdc_level)?;
     let bonus = graph.hulls.bonus_per_level();
     match ship {
         Some(r) => {
@@ -206,9 +252,10 @@ mod tests {
     #[test]
     fn jdc_level_scales_range() {
         let gd = graph_with_blops();
-        // Sin 4.0 at JDC 0 → 4.0; at JDC 3 → 4.0 × (1 + 0.6) = 6.4.
-        let (eff0, _) = resolve_effective_ly(&gd, Some(&ShipRef::Name("Sin".into())), 0).unwrap();
-        assert_eq!(eff0, 4.0);
+        // Sin 4.0 at JDC 1 → 4.0 × 1.2 = 4.8; at JDC 3 → 4.0 × 1.6 = 6.4. (JDC 0
+        // is no longer a valid input — every jump hull requires JDC 1.)
+        let (eff1, _) = resolve_effective_ly(&gd, Some(&ShipRef::Name("Sin".into())), 1).unwrap();
+        assert!((eff1 - 4.8).abs() < 1e-9);
         let (eff3, _) = resolve_effective_ly(&gd, Some(&ShipRef::Name("Sin".into())), 3).unwrap();
         assert!((eff3 - 6.4).abs() < 1e-9);
     }
@@ -221,9 +268,52 @@ mod tests {
     }
 
     #[test]
+    fn jdc_level_zero_is_rejected() {
+        // Every jump-capable hull requires JDC 1; 0 is no longer accepted by the
+        // blops endpoint either (was 0..=5, now 1..=5).
+        let gd = graph_with_blops();
+        let err = resolve_effective_ly(&gd, None, 0).unwrap_err();
+        assert!(matches!(err, AppError::InvalidParam(_)));
+    }
+
+    #[test]
+    fn validate_jdc_level_accepts_one_through_five_only() {
+        assert!(validate_jdc_level(0).is_err());
+        for lvl in 1..=5 {
+            assert!(
+                validate_jdc_level(lvl).is_ok(),
+                "level {lvl} should be valid"
+            );
+        }
+        assert!(validate_jdc_level(6).is_err());
+    }
+
+    #[test]
     fn unknown_hull_is_rejected() {
         let gd = graph_with_blops();
         let err = resolve_effective_ly(&gd, Some(&ShipRef::Name("Rifter".into())), 5).unwrap_err();
+        assert!(matches!(err, AppError::UnknownHull(s) if s == "Rifter"));
+    }
+
+    #[test]
+    fn range_resolve_hull_echoes_identity() {
+        // The range handler builds its hull echo from the resolved entry, which
+        // now carries the canonical name + typeID even for an id lookup.
+        let gd = graph_with_blops();
+        let by_id = resolve_hull(&gd, &ShipRef::Id(22430)).unwrap();
+        assert_eq!(by_id.name, "Sin");
+        assert_eq!(by_id.type_id, 22430);
+        assert_eq!(by_id.base_ly, 4.0);
+        // A case-insensitive name lookup echoes the canonical casing.
+        let by_name = resolve_hull(&gd, &ShipRef::Name("sIn".into())).unwrap();
+        assert_eq!(by_name.name, "Sin");
+        assert_eq!(by_name.type_id, 22430);
+    }
+
+    #[test]
+    fn range_unknown_hull_is_rejected() {
+        let gd = graph_with_blops();
+        let err = resolve_hull(&gd, &ShipRef::Name("Rifter".into())).unwrap_err();
         assert!(matches!(err, AppError::UnknownHull(s) if s == "Rifter"));
     }
 

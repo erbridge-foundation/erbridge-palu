@@ -96,7 +96,7 @@ HTTP 400
 [Asserts]
 jsonpath "$.error" == "unknown_hull"
 
-# ── invalid jdc_level (out of 0..=5) → 400, not clamped ──────────────────────
+# ── invalid jdc_level (out of 1..=5) → 400, not clamped ──────────────────────
 POST {{base_url}}/api/v1/route/blops
 Content-Type: application/json
 {
@@ -104,6 +104,20 @@ Content-Type: application/json
   "to": "Otanuomi",
   "ship": "Sin",
   "jdc_level": 9
+}
+
+HTTP 400
+[Asserts]
+jsonpath "$.error" == "invalid_param"
+
+# ── jdc_level 0 → 400 (every jump-capable hull requires JDC 1) ────────────────
+POST {{base_url}}/api/v1/route/blops
+Content-Type: application/json
+{
+  "from": "B-E3KQ",
+  "to": "Otanuomi",
+  "ship": "Sin",
+  "jdc_level": 0
 }
 
 HTTP 400
