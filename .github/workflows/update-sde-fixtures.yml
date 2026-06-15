@@ -1,0 +1,81 @@
+name: update-sde-fixtures
+
+# Periodically refresh the committed SDE test fixture from CCP's latest build.
+#
+# This is a scheduled CALLER around tests/fixtures/update-sde-fixtures.sh (the
+# `just update-fixtures` recipe). The script is the reusable core — it downloads
+# the latest SDE, rebuilds the whole fixture at one build number, and is a no-op
+# when the fixture is already current. This workflow just schedules it and opens
+# a PR when the fixture actually changes.
+#
+# Deliberately NOT Dependabot: Dependabot only tracks package ecosystems, not
+# CCP's HTTP static-data endpoint.
+#
+# The PR runs through the normal `backend` CI (fmt/clippy/test/hurl). Test
+# failures after a refresh are DESIRABLE, not noise — they surface real SDE
+# changes (moved gates, renamed systems, sec-status edits) that warrant a human
+# look at the code/assertions. Do not suppress them here; let CI gate the PR.
+
+on:
+  schedule:
+    # Mondays at 06:00 UTC. CCP ships the SDE on its own cadence; weekly is
+    # frequent enough to keep the fixture fresh without churn.
+    - cron: "0 6 * * 1"
+  # Allow manual runs from the Actions tab.
+  workflow_dispatch:
+
+# Only one refresh in flight at a time; a newer run supersedes an older one.
+concurrency:
+  group: update-sde-fixtures
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    name: refresh SDE fixture
+    runs-on: ubuntu-latest
+
+    # No `permissions:` block needed: the PR is opened with FIXTURE_BOT_TOKEN
+    # (a fine-grained PAT), not the default GITHUB_TOKEN. The org policy blocks
+    # GITHUB_TOKEN from creating PRs, and PRs it opens would skip CI anyway — a
+    # PAT-opened PR triggers the normal `backend` checks, which is the point.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      # curl, unzip, jq are all preinstalled on ubuntu-latest runners — the
+      # script's own tool check will fail loudly if that ever changes.
+      - name: Regenerate fixture
+        run: just update-fixtures
+
+      # Opens (or updates) a PR only if `just update-fixtures` changed tracked
+      # files. When the fixture is already at the latest build the script is a
+      # no-op, the tree is clean, and this step does nothing.
+      - name: Open PR if the fixture changed
+        uses: peter-evans/create-pull-request@v7
+        with:
+          # Fine-grained PAT scoped to this repo (Contents + Pull requests:
+          # write). Required because the org policy bars the default
+          # GITHUB_TOKEN from opening PRs; also makes the PR trigger CI.
+          token: ${{ secrets.FIXTURE_BOT_TOKEN }}
+          branch: chore/update-sde-fixtures
+          # Recreate the branch from scratch each run so a superseded refresh
+          # never leaves a stale diff behind.
+          delete-branch: true
+          commit-message: "chore: refresh SDE test fixture from latest CCP build"
+          title: "chore: refresh SDE test fixture from latest CCP build"
+          body: |
+            Automated refresh of the committed SDE test fixture
+            (`tests/fixtures/sde/`) from CCP's latest Tranquility build, via
+            `just update-fixtures`.
+
+            **Review the CI result, don't just merge.** Test failures here are
+            expected when the SDE genuinely changed (moved gates, renamed
+            systems, sec-status edits) — investigate and update the code or test
+            assertions rather than suppressing them. A green run means the fixture
+            bumped with no behavioural drift.
+          labels: |
+            chore
+            dependencies
