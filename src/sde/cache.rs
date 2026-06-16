@@ -283,32 +283,79 @@ fn is_unsafe_zip_path(name: &str) -> bool {
 
 /// Bring the cache to a usable state and return loaded data + active metadata.
 ///
-/// If valid cached data exists, load it immediately (the hot-reload task checks
-/// freshness asynchronously). Otherwise fetch synchronously — failure here is
-/// fatal because we can't serve without data.
+/// On startup we want to serve the latest SDE build, so the manifest is
+/// consulted up front:
+///
+/// * No valid cache → fetch synchronously. Failure is fatal — we can't serve
+///   without a graph.
+/// * Valid cache present → check `latest.jsonl`. If a newer build exists,
+///   download it before serving. If the manifest check (or the download of the
+///   newer build) fails, fall back to the cached build so a network blip
+///   doesn't prevent startup; the hot-reload task will catch up later.
 pub async fn ensure_cache(
     client: &reqwest::Client,
     cache: &SdeCache,
 ) -> Result<(RawSdeData, CacheMetadata)> {
     std::fs::create_dir_all(&cache.root).context("creating cache root")?;
 
-    if let Some(meta) = cache.current_metadata() {
+    let Some(meta) = cache.current_metadata() else {
+        info!("no SDE cache on disk; downloading the latest build before serving");
+        let latest = fetch_latest_build(client)
+            .await
+            .context("fetching latest SDE manifest")?;
         info!(
-            build = meta.build_number,
-            fetched_at = %meta.fetched_at,
-            "loading SDE from cache"
+            build = latest.build_number,
+            released = %latest.release_date,
+            "latest SDE build resolved; downloading"
         );
-        let data = cache.load_build(meta.build_number)?;
-        return Ok((data, meta));
-    }
+        let new_meta = fetch_and_install(client, cache, latest).await?;
+        let data = cache.load_build(new_meta.build_number)?;
+        info!(
+            build = new_meta.build_number,
+            "cold SDE fetch complete; serving fresh build"
+        );
+        return Ok((data, new_meta));
+    };
 
-    info!("no SDE cache found, fetching");
-    let latest = fetch_latest_build(client)
-        .await
-        .context("fetching latest SDE manifest")?;
-    let new_meta = fetch_and_install(client, cache, latest).await?;
-    let data = cache.load_build(new_meta.build_number)?;
-    Ok((data, new_meta))
+    // A valid cache exists; make sure it's the latest build before serving.
+    info!(
+        cached = meta.build_number,
+        fetched_at = %meta.fetched_at,
+        "found cached SDE; checking the manifest for a newer build before serving"
+    );
+    match check_and_refresh(client, cache, meta.build_number).await {
+        Ok(RefreshOutcome::UpToDate) => {
+            info!(
+                build = meta.build_number,
+                fetched_at = %meta.fetched_at,
+                "cached SDE is already the latest build; loading from cache"
+            );
+            let data = cache.load_build(meta.build_number)?;
+            Ok((data, meta))
+        }
+        Ok(RefreshOutcome::Updated {
+            data,
+            meta: new_meta,
+        }) => {
+            info!(
+                previous = meta.build_number,
+                build = new_meta.build_number,
+                released = ?new_meta.release_date,
+                "upgraded cached SDE to the latest build at startup"
+            );
+            Ok((data, new_meta))
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                build = meta.build_number,
+                "could not confirm the latest SDE build at startup (offline?); \
+                 serving the cached build — hot-reload will retry"
+            );
+            let data = cache.load_build(meta.build_number)?;
+            Ok((data, meta))
+        }
+    }
 }
 
 /// `PALU_SDE_DIR` override, if set: a directory holding pre-extracted
@@ -404,6 +451,11 @@ async fn fetch_and_install(
     };
     cache.write_metadata(&new_meta)?;
     let _ = cache.prune_other_builds(latest.build_number);
+    info!(
+        build = new_meta.build_number,
+        dir = %cache.build_dir(new_meta.build_number).display(),
+        "SDE build installed and made current"
+    );
     Ok(new_meta)
 }
 
