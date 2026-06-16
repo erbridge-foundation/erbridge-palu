@@ -32,6 +32,27 @@ const SECURITY_PENALTY: f32 = 10_000.0;
 /// the route by more than 2 jumps to be worth it."
 const WORMHOLE_PENALTY: f32 = 2.0;
 
+/// How a per-request overlay edge was created, so a path step can be labelled.
+/// Both kinds route identically; only the `via` label and the prefer-gates
+/// penalty (applied to any non-gate overlay edge) differ in presentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeKind {
+    /// A transient wormhole connection (user `connections[]` or EVE-Scout sig).
+    Wormhole,
+    /// A stable player-built bridge (e.g. an Ansiblex jump gate).
+    Bridge,
+}
+
+impl EdgeKind {
+    /// The `RouteStep.via` label for a step taken over this overlay edge.
+    pub fn via_label(self) -> &'static str {
+        match self {
+            EdgeKind::Wormhole => "wormhole",
+            EdgeKind::Bridge => "bridge",
+        }
+    }
+}
+
 /// Routing preference controlling composable edge weights.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Preference {
@@ -47,12 +68,13 @@ pub enum Preference {
 ///
 /// `avoid` holds nodes that must never appear in a path (including source or
 /// destination — those simply yield no route). `connections` is a sparse,
-/// mirrored adjacency overlay for per-request wormhole edges; the same
-/// mechanism serves user `connections[]` and EVE-Scout signatures.
+/// mirrored adjacency overlay for per-request connection edges, each tagged with
+/// its [`EdgeKind`] so a path step can be labelled `wormhole` or `ansiblex`; the
+/// same mechanism serves user `connections[]` and EVE-Scout signatures.
 pub struct RouteContext<'a> {
     pub graph: &'a GraphData,
     avoid: FxHashSet<NodeIndex>,
-    connections: FxHashMap<NodeIndex, SmallVec<[NodeIndex; 2]>>,
+    connections: FxHashMap<NodeIndex, SmallVec<[(NodeIndex, EdgeKind); 2]>>,
     pub preference: Preference,
 }
 
@@ -66,28 +88,35 @@ impl<'a> RouteContext<'a> {
         }
     }
 
-    /// Add an undirected per-request wormhole connection. Both directions are
-    /// inserted; self-loops and duplicates are silently ignored.
-    pub fn add_connection(&mut self, a: NodeIndex, b: NodeIndex) {
+    /// Add an undirected per-request connection of the given [`EdgeKind`]. Both
+    /// directions are inserted; self-loops and duplicates are silently ignored
+    /// (the first kind recorded for a pair wins on a duplicate).
+    pub fn add_connection(&mut self, a: NodeIndex, b: NodeIndex, kind: EdgeKind) {
         if a == b {
             return;
         }
         let entry = self.connections.entry(a).or_default();
-        if !entry.contains(&b) {
-            entry.push(b);
+        if !entry.iter().any(|(n, _)| *n == b) {
+            entry.push((b, kind));
         }
         let entry = self.connections.entry(b).or_default();
-        if !entry.contains(&a) {
-            entry.push(a);
+        if !entry.iter().any(|(n, _)| *n == a) {
+            entry.push((a, kind));
         }
     }
 
-    /// True iff `(a, b)` was added via `add_connection` (either direction).
-    /// Used to label path steps `wormhole` vs `stargate`.
-    pub fn is_wh_edge(&self, a: NodeIndex, b: NodeIndex) -> bool {
+    /// The [`EdgeKind`] of the overlay edge `(a, b)` if one was added via
+    /// `add_connection` (either direction), else `None`. Used to label path
+    /// steps and to apply the prefer-gates penalty.
+    pub fn overlay_edge_kind(&self, a: NodeIndex, b: NodeIndex) -> Option<EdgeKind> {
         self.connections
             .get(&a)
-            .is_some_and(|nbrs| nbrs.contains(&b))
+            .and_then(|nbrs| nbrs.iter().find(|(n, _)| *n == b).map(|(_, k)| *k))
+    }
+
+    /// True iff `(a, b)` is a per-request overlay edge (wormhole or ansiblex).
+    pub fn is_overlay_edge(&self, a: NodeIndex, b: NodeIndex) -> bool {
+        self.overlay_edge_kind(a, b).is_some()
     }
 
     /// True iff a base-graph gate connects `a` and `b`. Used to label a step
@@ -97,13 +126,14 @@ impl<'a> RouteContext<'a> {
         self.graph.gate_graph.contains_edge(a, b)
     }
 
-    /// How a step from `a` to `b` was reached: a real gate wins over an
-    /// overlay wormhole when both connect the pair.
+    /// How a step from `a` to `b` was reached: a real gate wins over an overlay
+    /// edge when both connect the pair; otherwise the overlay edge's kind
+    /// (`wormhole` / `bridge`) labels the step.
     pub fn step_via(&self, a: NodeIndex, b: NodeIndex) -> &'static str {
         if self.has_gate_edge(a, b) {
             "stargate"
-        } else if self.is_wh_edge(a, b) {
-            "wormhole"
+        } else if let Some(kind) = self.overlay_edge_kind(a, b) {
+            kind.via_label()
         } else {
             // Shouldn't happen for adjacent path nodes, but stay honest.
             "stargate"
@@ -111,7 +141,7 @@ impl<'a> RouteContext<'a> {
     }
 
     /// Neighbours of `node` under this context: base-graph gate neighbours
-    /// followed by overlay wormhole neighbours, with avoided nodes filtered so
+    /// followed by overlay connection neighbours, with avoided nodes filtered so
     /// they are never enqueued.
     fn neighbors(&self, node: NodeIndex) -> impl Iterator<Item = NodeIndex> + '_ {
         let base = self.graph.gate_graph.neighbors(node);
@@ -119,7 +149,7 @@ impl<'a> RouteContext<'a> {
             .connections
             .get(&node)
             .into_iter()
-            .flat_map(|v| v.iter().copied());
+            .flat_map(|v| v.iter().map(|(n, _)| *n));
         base.chain(overlay).filter(|nb| !self.avoid.contains(nb))
     }
 
@@ -138,13 +168,14 @@ impl<'a> RouteContext<'a> {
     }
 
     fn wormhole_penalty(&self, src: NodeIndex, dest: NodeIndex) -> f32 {
-        // Penalise a hop only when it is genuinely a wormhole — i.e. an overlay
-        // edge with no parallel gate. When a real gate also connects the pair,
-        // that gate is the cheaper way across and takes priority (matching
-        // `step_via`'s labelling), so no penalty applies.
+        // Penalise a hop only when it is genuinely a non-gate overlay edge
+        // (wormhole or ansiblex) — i.e. one with no parallel gate. When a real
+        // gate also connects the pair, that gate is the cheaper way across and
+        // takes priority (matching `step_via`'s labelling), so no penalty
+        // applies. `prefer_gates` favours stargates over any overlay shortcut.
         match self.preference {
             Preference::PreferGates
-                if self.is_wh_edge(src, dest) && !self.has_gate_edge(src, dest) =>
+                if self.is_overlay_edge(src, dest) && !self.has_gate_edge(src, dest) =>
             {
                 WORMHOLE_PENALTY
             }
@@ -643,12 +674,12 @@ mod tests {
         let gd = build_graph_data(raw, 0);
         let mut ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::Shortest);
         let (b, c) = (gd.id_to_idx[&2], gd.id_to_idx[&3]);
-        ctx.add_connection(b, c);
+        ctx.add_connection(b, c, EdgeKind::Wormhole);
         let mut s = DijkstraScratch::new();
         let path = shortest_path(&ctx, gd.id_to_idx[&1], gd.id_to_idx[&4], &mut s).unwrap();
         assert_eq!(path.len(), 4);
-        assert!(ctx.is_wh_edge(b, c) && ctx.is_wh_edge(c, b));
-        assert!(!ctx.is_wh_edge(gd.id_to_idx[&1], b));
+        assert!(ctx.is_overlay_edge(b, c) && ctx.is_overlay_edge(c, b));
+        assert!(!ctx.is_overlay_edge(gd.id_to_idx[&1], b));
     }
 
     #[test]
@@ -668,7 +699,7 @@ mod tests {
         let mut avoid = FxHashSet::default();
         avoid.insert(c);
         let mut ctx = RouteContext::new(&gd, avoid, Preference::Shortest);
-        ctx.add_connection(gd.id_to_idx[&2], c);
+        ctx.add_connection(gd.id_to_idx[&2], c, EdgeKind::Wormhole);
         let mut s = DijkstraScratch::new();
         assert!(shortest_path(&ctx, gd.id_to_idx[&1], gd.id_to_idx[&4], &mut s).is_none());
     }
@@ -679,8 +710,8 @@ mod tests {
         let gd = linear_three();
         let (a, b) = (gd.id_to_idx[&1], gd.id_to_idx[&2]);
         let mut ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::Shortest);
-        ctx.add_connection(a, b);
-        assert!(ctx.is_wh_edge(a, b));
+        ctx.add_connection(a, b, EdgeKind::Wormhole);
+        assert!(ctx.is_overlay_edge(a, b));
         assert!(ctx.has_gate_edge(a, b));
         assert_eq!(ctx.step_via(a, b), "stargate");
     }
@@ -691,9 +722,20 @@ mod tests {
         let gd = linear_three();
         let (a, c) = (gd.id_to_idx[&1], gd.id_to_idx[&3]);
         let mut ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::Shortest);
-        ctx.add_connection(a, c);
+        ctx.add_connection(a, c, EdgeKind::Wormhole);
         assert!(!ctx.has_gate_edge(a, c));
         assert_eq!(ctx.step_via(a, c), "wormhole");
+    }
+
+    #[test]
+    fn step_via_labels_bridge_edge() {
+        // No gate between A and C → a bridge there labels `bridge`.
+        let gd = linear_three();
+        let (a, c) = (gd.id_to_idx[&1], gd.id_to_idx[&3]);
+        let mut ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::Shortest);
+        ctx.add_connection(a, c, EdgeKind::Bridge);
+        assert_eq!(ctx.overlay_edge_kind(a, c), Some(EdgeKind::Bridge));
+        assert_eq!(ctx.step_via(a, c), "bridge");
     }
 
     #[test]
@@ -701,8 +743,8 @@ mod tests {
         let gd = linear_three();
         let mut ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::Shortest);
         let a = gd.id_to_idx[&1];
-        ctx.add_connection(a, a);
-        assert!(!ctx.is_wh_edge(a, a));
+        ctx.add_connection(a, a, EdgeKind::Wormhole);
+        assert!(!ctx.is_overlay_edge(a, a));
     }
 
     // ── prefer_gates thresholds ─────────────────────────────────────────────────
@@ -732,12 +774,12 @@ mod tests {
         let gd = gate_chain(3);
         let (a, c) = (gd.id_to_idx[&1], gd.id_to_idx[&3]);
         let mut ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::PreferGates);
-        ctx.add_connection(a, c);
+        ctx.add_connection(a, c, EdgeKind::Wormhole);
         let mut s = DijkstraScratch::new();
         let path = shortest_path(&ctx, a, c, &mut s).unwrap();
         assert_eq!(path.len(), 3, "should take the 2-gate path, not the WH");
         assert_eq!(path[1], gd.id_to_idx[&2], "middle hop is the gate system");
-        assert!(!ctx.is_wh_edge(path[0], path[1]));
+        assert!(!ctx.is_overlay_edge(path[0], path[1]));
     }
 
     #[test]
@@ -748,7 +790,7 @@ mod tests {
         let gd = gate_chain(3); // A—B—C
         let (a, b) = (gd.id_to_idx[&1], gd.id_to_idx[&2]);
         let mut ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::PreferGates);
-        ctx.add_connection(a, b); // WH parallel to the A—B gate
+        ctx.add_connection(a, b, EdgeKind::Wormhole); // WH parallel to the A—B gate
         let mut s = DijkstraScratch::new();
         let path = shortest_path(&ctx, a, b, &mut s).unwrap();
         assert_eq!(path.len(), 2, "direct gate hop, no detour");
@@ -762,11 +804,11 @@ mod tests {
         let gd = gate_chain(5);
         let (a, e) = (gd.id_to_idx[&1], gd.id_to_idx[&5]);
         let mut ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::PreferGates);
-        ctx.add_connection(a, e);
+        ctx.add_connection(a, e, EdgeKind::Wormhole);
         let mut s = DijkstraScratch::new();
         let path = shortest_path(&ctx, a, e, &mut s).unwrap();
         assert_eq!(path.len(), 2, "should take the WH shortcut");
-        assert!(ctx.is_wh_edge(path[0], path[1]));
+        assert!(ctx.is_overlay_edge(path[0], path[1]));
     }
 
     // ── multi-target search ────────────────────────────────────────────────────
@@ -876,7 +918,7 @@ mod tests {
         let gd = build_graph_data(raw, 0);
         let mut ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::Shortest);
         let (b, c) = (gd.id_to_idx[&2], gd.id_to_idx[&3]);
-        ctx.add_connection(b, c);
+        ctx.add_connection(b, c, EdgeKind::Wormhole);
         let mut s = DijkstraScratch::new();
         let (a, d) = (gd.id_to_idx[&1], gd.id_to_idx[&4]);
         let got = shortest_path_multi(&ctx, a, &[d], &mut s);
@@ -891,10 +933,10 @@ mod tests {
         let gd = gate_chain(3);
         let (a, c) = (gd.id_to_idx[&1], gd.id_to_idx[&3]);
         let mut ctx = RouteContext::new(&gd, FxHashSet::default(), Preference::Shortest);
-        ctx.add_connection(a, c);
+        ctx.add_connection(a, c, EdgeKind::Wormhole);
         let mut s = DijkstraScratch::new();
         let path = shortest_path(&ctx, a, c, &mut s).unwrap();
         assert_eq!(path.len(), 2);
-        assert!(ctx.is_wh_edge(path[0], path[1]));
+        assert!(ctx.is_overlay_edge(path[0], path[1]));
     }
 }

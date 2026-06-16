@@ -61,13 +61,33 @@ fn default_jdc_level() -> u8 {
     crate::range::DEFAULT_JDC_LEVEL
 }
 
-/// A user-supplied wormhole connection added to the per-request overlay.
+/// The type of a user-supplied connection. The `type` discriminator on each
+/// `connections[]` entry; a missing or unrecognised value is rejected by serde
+/// (a request-level `400`). `bridge` is a stable player-built bridge (e.g. an
+/// Ansiblex jump gate); `wormhole` is a transient signature connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionKind {
+    Bridge,
+    Wormhole,
+}
+
+/// A user-supplied connection added to the per-request overlay. Always ingested
+/// and validated; whether it is *used* is governed per `type` by the matching
+/// use-flag (`use_bridges` / `use_wormholes`). `from`/`to` are shared by both
+/// types; `max_size` applies to `wormhole` only.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
-pub struct WhConnection {
+#[schema(example = json!({ "type": "bridge", "from": "1DQ1-A", "to": "T5ZI-S" }))]
+pub struct Connection {
+    /// `bridge` or `wormhole`. Required — a missing or unrecognised value is a
+    /// request-level `400`.
+    #[serde(rename = "type")]
+    pub kind: ConnectionKind,
     pub from: SystemRef,
     pub to: SystemRef,
     /// `medium`/`large`/`xlarge`/`capital`. Reserved for future ship-fit
     /// filtering — parsed and stored but **not enforced** in this foundation.
+    /// Applies to `wormhole` entries only; ignored for `bridge`.
     #[serde(default)]
     #[schema(example = "xlarge")]
     pub max_size: Option<String>,
@@ -103,13 +123,22 @@ pub struct GateRouteRequest {
     /// only path runs through an avoided system the result is `unreachable`.
     #[serde(default)]
     pub avoid: Vec<SystemRef>,
-    /// When true, `connections[]` wormhole edges are added to the overlay.
+    /// When true, `wormhole`-typed `connections[]` entries are added to the
+    /// overlay. Gates **only** the user-supplied wormhole connections — not
+    /// EVE-Scout Thera/Turnur signatures, which have their own `include_*` flags.
     #[serde(default)]
     #[schema(default = false, example = false)]
     pub use_wormholes: bool,
-    /// Per-request wormhole connections (only used when `use_wormholes`).
+    /// When true, `bridge`-typed `connections[]` entries are added to the
+    /// overlay.
     #[serde(default)]
-    pub connections: Vec<WhConnection>,
+    #[schema(default = false, example = false)]
+    pub use_bridges: bool,
+    /// Per-request typed connections. Always ingested and validated (an unknown
+    /// system is a request-level `400`); entries are used per their `type` flag
+    /// (`use_wormholes` / `use_bridges`).
+    #[serde(default)]
+    pub connections: Vec<Connection>,
     /// Add live EVE-Scout Thera signatures to the overlay.
     #[serde(default)]
     #[schema(default = false, example = false)]
@@ -173,7 +202,7 @@ pub struct RouteStep {
     pub system_id: i64,
     pub security: f32,
     pub sec_class: String,
-    /// `start`, `stargate`, or `wormhole`.
+    /// `start`, `stargate`, `wormhole`, or `ansiblex`.
     pub via: String,
 }
 
@@ -207,13 +236,22 @@ pub struct BlopsRouteRequest {
     /// Systems to exclude from the A→★ gate leg. Unknown systems yield a 400.
     #[serde(default)]
     pub avoid: Vec<SystemRef>,
-    /// When true, `connections[]` wormhole edges are added to the overlay.
+    /// When true, `wormhole`-typed `connections[]` entries are added to the
+    /// overlay. Gates **only** the user-supplied wormhole connections — not
+    /// EVE-Scout Thera/Turnur signatures, which have their own `include_*` flags.
     #[serde(default)]
     #[schema(default = false, example = false)]
     pub use_wormholes: bool,
-    /// Per-request wormhole connections (only used when `use_wormholes`).
+    /// When true, `bridge`-typed `connections[]` entries are added to the
+    /// overlay.
     #[serde(default)]
-    pub connections: Vec<WhConnection>,
+    #[schema(default = false, example = false)]
+    pub use_bridges: bool,
+    /// Per-request typed connections. Always ingested and validated (an unknown
+    /// system is a request-level `400`); entries are used per their `type` flag
+    /// (`use_wormholes` / `use_bridges`).
+    #[serde(default)]
+    pub connections: Vec<Connection>,
     /// Add live EVE-Scout Thera signatures to the overlay.
     #[serde(default)]
     #[schema(default = false, example = false)]
@@ -442,6 +480,7 @@ mod tests {
         assert!(matches!(req.preference, RoutePreference::Shortest));
         assert!(req.avoid.is_empty());
         assert!(!req.use_wormholes);
+        assert!(!req.use_bridges);
         assert!(req.connections.is_empty());
         assert!(!req.include_thera && !req.include_turnur && !req.include_zarzakh);
     }
@@ -550,7 +589,7 @@ mod tests {
         assert_eq!(req.jdc_level, 5, "jdc_level defaults to maxed (5)");
         assert!(matches!(req.preference, RoutePreference::Shortest));
         assert!(req.avoid.is_empty());
-        assert!(!req.use_wormholes && req.connections.is_empty());
+        assert!(!req.use_wormholes && !req.use_bridges && req.connections.is_empty());
         assert!(!req.include_thera && !req.include_turnur && !req.include_zarzakh);
     }
 
@@ -590,11 +629,64 @@ mod tests {
     }
 
     #[test]
-    fn connection_max_size_is_optional() {
-        let c: WhConnection = serde_json::from_str(r#"{"from":"Jita","to":"Urlen"}"#).unwrap();
+    fn wormhole_connection_max_size_is_optional() {
+        let c: Connection =
+            serde_json::from_str(r#"{"type":"wormhole","from":"Jita","to":"Urlen"}"#).unwrap();
+        assert_eq!(c.kind, ConnectionKind::Wormhole);
         assert!(c.max_size.is_none());
-        let c: WhConnection =
-            serde_json::from_str(r#"{"from":"Jita","to":"Urlen","max_size":"large"}"#).unwrap();
+        let c: Connection = serde_json::from_str(
+            r#"{"type":"wormhole","from":"Jita","to":"Urlen","max_size":"large"}"#,
+        )
+        .unwrap();
         assert_eq!(c.max_size.as_deref(), Some("large"));
+    }
+
+    #[test]
+    fn bridge_connection_parses() {
+        let c: Connection =
+            serde_json::from_str(r#"{"type":"bridge","from":"1DQ1-A","to":"T5ZI-S"}"#).unwrap();
+        assert_eq!(c.kind, ConnectionKind::Bridge);
+        assert!(matches!(c.from, SystemRef::Name(n) if n == "1DQ1-A"));
+    }
+
+    #[test]
+    fn connection_missing_type_is_rejected() {
+        // The `type` discriminator is required — a missing one fails to parse
+        // (a request-level 400), not silently defaulting to wormhole.
+        assert!(serde_json::from_str::<Connection>(r#"{"from":"Jita","to":"Urlen"}"#).is_err());
+    }
+
+    #[test]
+    fn connection_unknown_type_is_rejected() {
+        assert!(
+            serde_json::from_str::<Connection>(r#"{"type":"titan","from":"Jita","to":"Urlen"}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn use_bridges_defaults_false() {
+        let req: GateRouteRequest =
+            serde_json::from_str(r#"{"from":"Jita","to":["Urlen"]}"#).unwrap();
+        assert!(!req.use_bridges);
+        let req: GateRouteRequest =
+            serde_json::from_str(r#"{"from":"Jita","to":["Urlen"],"use_bridges":true}"#).unwrap();
+        assert!(req.use_bridges);
+    }
+
+    #[test]
+    fn request_parses_typed_connections() {
+        let req: GateRouteRequest = serde_json::from_str(
+            r#"{"from":"Jita","to":["Urlen"],"use_bridges":true,
+                "connections":[
+                    {"type":"bridge","from":"1DQ1-A","to":"T5ZI-S"},
+                    {"type":"wormhole","from":"Jita","to":"Thera","max_size":"xlarge"}
+                ]}"#,
+        )
+        .unwrap();
+        assert_eq!(req.connections.len(), 2);
+        assert_eq!(req.connections[0].kind, ConnectionKind::Bridge);
+        assert_eq!(req.connections[1].kind, ConnectionKind::Wormhole);
+        assert_eq!(req.connections[1].max_size.as_deref(), Some("xlarge"));
     }
 }

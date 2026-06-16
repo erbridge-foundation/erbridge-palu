@@ -52,7 +52,7 @@ Content-Type: application/json
   "to": ["Amarr"],
   "preference": "shortest",
   "use_wormholes": true,
-  "connections": [ { "from": "Jita", "to": "Akhragan" } ]
+  "connections": [ { "type": "wormhole", "from": "Jita", "to": "Akhragan" } ]
 }
 
 HTTP 200
@@ -62,6 +62,44 @@ jsonpath "$.results[0].path[1].system" == "Akhragan"
 jsonpath "$.results[0].path[1].via" == "wormhole"
 jsonpath "$.results[0].path[-1].system" == "Amarr"
 
+# ── bridge shortcut: same hop typed `bridge`, labelled `bridge` ───────────────
+POST {{base_url}}/api/v1/route/system
+Content-Type: application/json
+{
+  "from": "Jita",
+  "to": ["Amarr"],
+  "preference": "shortest",
+  "use_bridges": true,
+  "connections": [ { "type": "bridge", "from": "Jita", "to": "Akhragan" } ]
+}
+
+HTTP 200
+[Asserts]
+jsonpath "$.results[0].jumps" == 4
+jsonpath "$.results[0].path[1].system" == "Akhragan"
+jsonpath "$.results[0].path[1].via" == "bridge"
+
+# ── independent flags: bridge used while wormholes excluded ───────────────────
+# use_wormholes off, use_bridges on: the wormhole entry is ignored, the
+# bridge routes (4 jumps, labelled bridge).
+POST {{base_url}}/api/v1/route/system
+Content-Type: application/json
+{
+  "from": "Jita",
+  "to": ["Amarr"],
+  "use_wormholes": false,
+  "use_bridges": true,
+  "connections": [
+    { "type": "wormhole", "from": "Jita", "to": "Perimeter" },
+    { "type": "bridge", "from": "Jita", "to": "Akhragan" }
+  ]
+}
+
+HTTP 200
+[Asserts]
+jsonpath "$.results[0].jumps" == 4
+jsonpath "$.results[0].path[1].via" == "bridge"
+
 # ── prefer_gates: marginal WH is skipped (gate kept, labelled stargate) ───────
 POST {{base_url}}/api/v1/route/system
 Content-Type: application/json
@@ -70,7 +108,7 @@ Content-Type: application/json
   "to": ["Perimeter"],
   "preference": "prefer_gates",
   "use_wormholes": true,
-  "connections": [ { "from": "Jita", "to": "Perimeter" } ]
+  "connections": [ { "type": "wormhole", "from": "Jita", "to": "Perimeter" } ]
 }
 
 HTTP 200
@@ -85,12 +123,40 @@ Content-Type: application/json
   "from": "Jita",
   "to": ["Amarr"],
   "use_wormholes": true,
-  "connections": [ { "from": "Jita", "to": "Akhragan", "max_size": "medium" } ]
+  "connections": [ { "type": "wormhole", "from": "Jita", "to": "Akhragan", "max_size": "medium" } ]
 }
 
 HTTP 200
 [Asserts]
 jsonpath "$.results[0].jumps" == 4
+
+# ── connections are always validated, even when their flag is off ─────────────
+# use_wormholes off but the entry references an unknown system → request-level
+# 400 (previously this was silently ignored).
+POST {{base_url}}/api/v1/route/system
+Content-Type: application/json
+{
+  "from": "Jita",
+  "to": ["Amarr"],
+  "use_wormholes": false,
+  "connections": [ { "type": "wormhole", "from": "Jita", "to": "Nowhere" } ]
+}
+
+HTTP 400
+[Asserts]
+jsonpath "$.error" == "unknown_system"
+
+# ── unknown connection `type` → rejected by the extractor (422) ───────────────
+POST {{base_url}}/api/v1/route/system
+Content-Type: application/json
+{
+  "from": "Jita",
+  "to": ["Amarr"],
+  "use_wormholes": true,
+  "connections": [ { "type": "titan", "from": "Jita", "to": "Akhragan" } ]
+}
+
+HTTP 422
 
 # ── numeric system ids resolve (Jita 30000142 → Perimeter 30000144) ──────────
 # The echoed `from`/`to` come back as the bare numbers the client sent.

@@ -9,6 +9,13 @@ jsonpath "$.paths['/api/v1/route/system']" exists
 jsonpath "$.paths['/api/v1/route/blops']" exists
 jsonpath "$.paths['/api/v1/route/range']" exists
 jsonpath "$.paths['/health']" exists
+# Typed-connection overlay: the Connection schema has a required `type`
+# discriminator over the bridge/wormhole enum, and the system-route request
+# carries the independent `use_bridges` flag.
+jsonpath "$.components.schemas.Connection.required" contains "type"
+jsonpath "$.components.schemas.ConnectionKind.enum" contains "bridge"
+jsonpath "$.components.schemas.ConnectionKind.enum" contains "wormhole"
+jsonpath "$.components.schemas.GateRouteRequest.properties.use_bridges" exists
 
 
 # Swagger UI is reachable (it serves an HTML page).

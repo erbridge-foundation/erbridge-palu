@@ -6,7 +6,7 @@
 
 EVE Online gate-routing REST API. It loads CCP's Static Data Export (SDE),
 builds the New Eden gate graph in memory, and serves routing over HTTP with
-per-request wormhole overlays.
+per-request connection overlays (player-built bridges + wormholes).
 
 Wormhole ship-size enforcement and authentication are deliberately **out of
 scope** and land as additive changes. It ships with **no authentication** and is
@@ -30,8 +30,11 @@ small tribute to the original pathfinders.
 cargo run
 ```
 
-The server binds to `0.0.0.0:5001` by default. On first start it downloads the
-SDE (a few MB) and builds the graph; subsequent starts load from the disk cache.
+The server binds to `0.0.0.0:5001` by default. On startup it checks CCP's
+manifest and downloads the SDE if the disk cache is missing or stale, then builds
+the graph. When the cache is already the latest build, startup loads straight
+from disk; if the manifest can't be reached, it serves the cached build and lets
+the background poller catch up.
 
 ```sh
 PALU_PORT=9090 cargo run     # override the port
@@ -67,7 +70,7 @@ cache in a named volume. It has no auth — keep it on a trusted network.
 
 | Method | Path                     | Description                          |
 |--------|--------------------------|--------------------------------------|
-| POST   | `/api/v1/route/system`   | Compute a system-to-system route     |
+| POST   | `/api/v1/route/system`   | Fan out routes from one source to many destinations |
 | POST   | `/api/v1/route/blops`    | Stage a fleet into bridge range of a cyno target |
 | POST   | `/api/v1/route/range`    | List every system reachable in one jump from a source |
 | GET    | `/health`                | App version, SDE version, graph size, freshness |
@@ -76,41 +79,79 @@ cache in a named volume. It has no auth — keep it on a trusted network.
 
 ### `POST /api/v1/route/system`
 
-Routes between two systems over the gate graph plus the per-request wormhole
-overlay. `from` and `to` accept a system name (case-insensitive) or a numeric
-SDE id.
+Fans out routes from one shared source `from` to many destinations `to[]` over
+the gate graph plus the per-request connection overlay. `from` and each entry of
+`to[]` accept a system name (case-insensitive) or a numeric SDE id. A single
+route is just `to: ["Amarr"]`. Results are returned one per destination, in
+request order; duplicate destinations are permitted and answered positionally.
 
 ```sh
 curl -s localhost:5001/api/v1/route/system \
   -H 'content-type: application/json' \
-  -d '{"from": "Jita", "to": "Amarr", "preference": "shortest"}'
+  -d '{"from": "Jita", "to": ["Amarr", "Nonexistent"], "preference": "shortest"}'
 ```
 
 ```json
 {
-  "jumps": 11,
-  "path": [
-    { "system": "Jita", "system_id": 30000142, "security": 0.95, "sec_class": "Highsec", "via": "start" },
-    { "system": "Perimeter", "system_id": 30000144, "security": 0.95, "sec_class": "Highsec", "via": "stargate" }
+  "from": "Jita",
+  "results": [
+    {
+      "to": "Amarr",
+      "jumps": 11,
+      "path": [
+        { "system": "Jita", "system_id": 30000142, "security": 0.95, "sec_class": "Highsec", "via": "start" },
+        { "system": "Perimeter", "system_id": 30000144, "security": 0.95, "sec_class": "Highsec", "via": "stargate" }
+      ]
+    },
+    {
+      "to": "Nonexistent",
+      "error": "unknown_system",
+      "message": "system not found: Nonexistent"
+    }
   ]
 }
 ```
+
+(The `Amarr` `path` is truncated to two steps here; the real response lists every
+hop.)
+
+The `from` is echoed once. Each `results` entry echoes its `to` exactly as sent,
+then is **either** a route (`jumps` + `path`) **or** an in-slot failure (`error`
++ `message`, the same code/message a single-request `4xx` would carry). The
+overlay and preference are not echoed back — the client already holds what it
+sent.
 
 Request fields:
 
 | Field             | Type                | Default      | Notes                                                                 |
 |-------------------|---------------------|--------------|-----------------------------------------------------------------------|
-| `from`, `to`      | name or id          | (required)   | Unknown system → `400`                                                 |
+| `from`            | name or id          | (required)   | Shared source. Unknown system → `400`                                 |
+| `to`              | array of name/id    | (required)   | Destinations. Non-empty and at most 1000; empty or over-cap → `400`   |
 | `preference`      | enum                | `shortest`   | `shortest`, `safest`, `prefer_gates`                                   |
 | `avoid`           | array of name/id    | `[]`         | Systems never used as transit hops                                     |
-| `use_wormholes`   | bool                | `false`      | When true, `connections[]` are added to the overlay                   |
-| `connections`     | array of `{from,to,max_size?}` | `[]` | `max_size` is parsed but **not enforced** (reserved for ship-fit)     |
-| `include_thera`   | bool                | `false`      | Add live EVE-Scout Thera signatures to the overlay                    |
-| `include_turnur`  | bool                | `false`      | Add live EVE-Scout Turnur signatures to the overlay                   |
+| `use_wormholes`   | bool                | `false`      | When true, `wormhole`-typed `connections[]` are added to the overlay (gates only those entries, **not** EVE-Scout) |
+| `use_bridges`     | bool                | `false`      | When true, `bridge`-typed `connections[]` are added to the overlay    |
+| `connections`     | array of `{type,from,to,max_size?}` | `[]` | Typed connections, **always** ingested and validated; used per their `type` flag. `type` is `bridge` or `wormhole` (required). `max_size` (wormhole only) is parsed but **not enforced** (reserved for ship-fit) |
+| `include_thera`   | bool                | `false`      | Add live EVE-Scout Thera signatures to the overlay (independent of `use_wormholes`) |
+| `include_turnur`  | bool                | `false`      | Add live EVE-Scout Turnur signatures to the overlay (independent of `use_wormholes`) |
 | `include_zarzakh` | bool                | `false`      | Allow Zarzakh (30100000) as a transit hop (see below)                |
 
-Responses: `200` with the route, `400` for an unknown system, `404` when no
-route exists under the given overlay and preference (`{"error": "unreachable"}`).
+Each `connections[]` entry carries a required `type` — `bridge` (a stable
+player-built bridge, e.g. an Ansiblex jump gate) or `wormhole` (a transient
+signature). The list is **always** ingested and validated: an unknown system in
+any entry is a `400` regardless of the use-flags. The use-flags decide what is
+*used*, not what is *accepted* — `use_wormholes` gates the `wormhole`-typed
+entries and `use_bridges` the `bridge`-typed ones, independently. So a set of
+wormholes and bridges with `use_wormholes: false, use_bridges: true` still routes
+over the bridges. A missing or unrecognised `type` is rejected (`422`).
+
+The failure model mirrors the request's structure. A **shared-header** problem —
+an unresolvable `from`, an unknown system in `connections[]`/`avoid[]` (validated
+even when its use-flag is off), or a `to[]` that is empty or over the 1000 cap —
+is a request-level `400`, before any route is computed. A **per-destination** problem (unknown or unreachable) is reported
+in that destination's `results` entry as an `error`/`message` pair while the
+request still returns `200`, so one bad hub never sinks the routes that resolved.
+The per-destination `unreachable` failure carries `{"error": "unreachable"}`.
 
 Preferences:
 
@@ -120,8 +161,10 @@ Preferences:
 - **`prefer_gates`** — apply a small additive penalty per wormhole hop, so a
   wormhole is taken only when it shortens the route by more than that penalty.
 
-Each path step's `via` is `start`, `stargate`, or `wormhole`. A real gate always
-labels `stargate` even if a wormhole also connects the same pair.
+Each path step's `via` is `start`, `stargate`, `wormhole`, or `bridge`. A real
+gate always labels `stargate` even if an overlay connection also links the same
+pair; a `bridge` hop labels `bridge` and a wormhole hop (user or EVE-Scout)
+labels `wormhole`.
 
 ### `POST /api/v1/route/blops`
 
@@ -170,8 +213,8 @@ curl -s localhost:5001/api/v1/route/blops \
 in-range candidate, ranked by fewest gate jumps then closest to B.)
 
 Request fields (A→★ leg shares `preference`, `avoid`, `use_wormholes`,
-`connections`, `include_thera`, `include_turnur`, `include_zarzakh` with
-`/route/system` above):
+`use_bridges`, `connections` (typed), `include_thera`, `include_turnur`,
+`include_zarzakh` with `/route/system` above):
 
 | Field        | Type           | Default          | Notes                                                              |
 |--------------|----------------|------------------|--------------------------------------------------------------------|
@@ -266,12 +309,22 @@ Responses: `200` with the reachable set (possibly empty), `400` for an unknown
 system/hull or a `jdc_level` outside `1..=5`, and `422` when a required field
 (`ship`/`jdc_level`) is missing from the body.
 
-### Wormhole overlays
+### Connection overlays
 
-User `connections[]` and EVE-Scout Thera/Turnur signatures feed the **same**
-per-request overlay — the base graph is never mutated. EVE-Scout signatures are
-fetched by a background poller (never on the request path); expired signatures
-are dropped when building each request's overlay.
+User `connections[]` (typed `bridge` or `wormhole`) and EVE-Scout Thera/Turnur
+signatures feed the **same** per-request overlay — the base graph is never
+mutated. Each user entry is always ingested and validated; whether it is *used*
+is gated per `type` by `use_bridges` / `use_wormholes`, which are independent of
+each other. A `bridge` hop is labelled `via: "bridge"`; a `wormhole` hop
+(user-supplied **or** EVE-Scout) is labelled `via: "wormhole"`.
+
+EVE-Scout signatures are their own switches: `include_thera` / `include_turnur`
+govern them, **not** `use_wormholes` — so "avoid my own wormhole chain but still
+hop through Thera" is `use_wormholes: false, include_thera: true`. A hub's
+signatures are also added automatically when it is the route's own `from`/`to`
+(Thera is a gateless wormhole and would otherwise be unreachable as an endpoint).
+Signatures are fetched by a background poller (never on the request path);
+expired signatures are dropped when building each request's overlay.
 
 ### Zarzakh
 
@@ -308,9 +361,11 @@ Override with `PALU_CACHE_DIR`.
 > and prunes old ones. Don't point `PALU_CACHE_DIR` at `tests/fixtures/` or
 > any directory whose contents you care about.
 
-The graph hot-reloads in the background: when CCP publishes a newer build, a new
-graph is built fully in memory and atomically swapped in. Reload failures are
-non-fatal (the current graph keeps serving); only the initial load is fatal.
+Startup ensures the cache is the latest build before serving (see [Run](#run)).
+Thereafter the graph hot-reloads in the background: when CCP publishes a newer
+build, a new graph is built fully in memory and atomically swapped in. Reload
+failures are non-fatal (the current graph keeps serving); only the initial load
+is fatal.
 
 ## Architecture
 
@@ -328,6 +383,7 @@ src/
 ├── sde/             SDE cache, manifest poll, JSONL parsing
 ├── graph.rs         build GraphData (graph + lookups + kd-tree)
 ├── routing.rs       RouteContext overlay + Dijkstra
+├── range.rs         jump-range math (effective LY from hull + JDC)
 ├── eve_scout.rs     Thera/Turnur signature poller + snapshot
 ├── services/        business logic (overlay assembly + routing)
 ├── handlers/        HTTP boundary: load snapshots, call services, return DTOs

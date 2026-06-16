@@ -34,22 +34,22 @@ Content-Type: application/json
   "preference": "shortest",
   "use_wormholes": true,
   "connections": [
-    {"from":"J120455","to":"Lashkai"}, {"from":"J120455","to":"Orduin"},
-    {"from":"J120455","to":"DDI-B7"}, {"from":"J120455","to":"J131142"},
-    {"from":"J131142","to":"Amoderia"}, {"from":"J131142","to":"HL-VZX"},
-    {"from":"J131142","to":"J133011"},
-    {"from":"J133011","to":"J133525"}, {"from":"J133011","to":"J151319"},
-    {"from":"J172840","to":"J213956"}, {"from":"J172840","to":"O-TVTD"},
-    {"from":"J213956","to":"J113453"}, {"from":"J213956","to":"J161411"},
-    {"from":"J113453","to":"J162132"}, {"from":"J162132","to":"J112241"},
-    {"from":"J113453","to":"QPTT-F"}, {"from":"J113453","to":"AU2V-J"},
-    {"from":"J161411","to":"J145155"}, {"from":"J161411","to":"J131204"},
-    {"from":"J161411","to":"J122832"},
-    {"from":"J145155","to":"J131852"}, {"from":"J145155","to":"Atai"},
-    {"from":"J145155","to":"J140810"}, {"from":"J145155","to":"Iosantin"},
-    {"from":"J145155","to":"J105415"},
-    {"from":"J131204","to":"J222104"}, {"from":"J131204","to":"Martha"},
-    {"from":"J122832","to":"J113925"}, {"from":"J122832","to":"Adar"}
+    {"type":"wormhole","from":"J120455","to":"Lashkai"}, {"type":"wormhole","from":"J120455","to":"Orduin"},
+    {"type":"wormhole","from":"J120455","to":"DDI-B7"}, {"type":"wormhole","from":"J120455","to":"J131142"},
+    {"type":"wormhole","from":"J131142","to":"Amoderia"}, {"type":"wormhole","from":"J131142","to":"HL-VZX"},
+    {"type":"wormhole","from":"J131142","to":"J133011"},
+    {"type":"wormhole","from":"J133011","to":"J133525"}, {"type":"wormhole","from":"J133011","to":"J151319"},
+    {"type":"wormhole","from":"J172840","to":"J213956"}, {"type":"wormhole","from":"J172840","to":"O-TVTD"},
+    {"type":"wormhole","from":"J213956","to":"J113453"}, {"type":"wormhole","from":"J213956","to":"J161411"},
+    {"type":"wormhole","from":"J113453","to":"J162132"}, {"type":"wormhole","from":"J162132","to":"J112241"},
+    {"type":"wormhole","from":"J113453","to":"QPTT-F"}, {"type":"wormhole","from":"J113453","to":"AU2V-J"},
+    {"type":"wormhole","from":"J161411","to":"J145155"}, {"type":"wormhole","from":"J161411","to":"J131204"},
+    {"type":"wormhole","from":"J161411","to":"J122832"},
+    {"type":"wormhole","from":"J145155","to":"J131852"}, {"type":"wormhole","from":"J145155","to":"Atai"},
+    {"type":"wormhole","from":"J145155","to":"J140810"}, {"type":"wormhole","from":"J145155","to":"Iosantin"},
+    {"type":"wormhole","from":"J145155","to":"J105415"},
+    {"type":"wormhole","from":"J131204","to":"J222104"}, {"type":"wormhole","from":"J131204","to":"Martha"},
+    {"type":"wormhole","from":"J122832","to":"J113925"}, {"type":"wormhole","from":"J122832","to":"Adar"}
   ]
 }
 
@@ -76,12 +76,12 @@ Content-Type: application/json
   "to": ["J120455"],
   "use_wormholes": true,
   "connections": [
-    {"from":"J120455","to":"Lashkai"}, {"from":"J120455","to":"J131142"},
-    {"from":"J131142","to":"J133011"},
-    {"from":"J133011","to":"J133525"}, {"from":"J133011","to":"J151319"},
-    {"from":"J172840","to":"J213956"},
-    {"from":"J213956","to":"J113453"}, {"from":"J213956","to":"J161411"},
-    {"from":"J161411","to":"J131204"}, {"from":"J131204","to":"Martha"}
+    {"type":"wormhole","from":"J120455","to":"Lashkai"}, {"type":"wormhole","from":"J120455","to":"J131142"},
+    {"type":"wormhole","from":"J131142","to":"J133011"},
+    {"type":"wormhole","from":"J133011","to":"J133525"}, {"type":"wormhole","from":"J133011","to":"J151319"},
+    {"type":"wormhole","from":"J172840","to":"J213956"},
+    {"type":"wormhole","from":"J213956","to":"J113453"}, {"type":"wormhole","from":"J213956","to":"J161411"},
+    {"type":"wormhole","from":"J161411","to":"J131204"}, {"type":"wormhole","from":"J131204","to":"Martha"}
   ]
 }
 
@@ -111,11 +111,11 @@ Content-Type: application/json
   "to": ["J172840"],
   "use_wormholes": true,
   "connections": [
-    {"from":"J120455","to":"Lashkai"}, {"from":"J120455","to":"Orduin"},
-    {"from":"J120455","to":"DDI-B7"}, {"from":"J120455","to":"J131142"},
-    {"from":"J131142","to":"Amoderia"}, {"from":"J131142","to":"HL-VZX"},
-    {"from":"J131142","to":"J133011"},
-    {"from":"J133011","to":"J133525"}, {"from":"J133011","to":"J151319"}
+    {"type":"wormhole","from":"J120455","to":"Lashkai"}, {"type":"wormhole","from":"J120455","to":"Orduin"},
+    {"type":"wormhole","from":"J120455","to":"DDI-B7"}, {"type":"wormhole","from":"J120455","to":"J131142"},
+    {"type":"wormhole","from":"J131142","to":"Amoderia"}, {"type":"wormhole","from":"J131142","to":"HL-VZX"},
+    {"type":"wormhole","from":"J131142","to":"J133011"},
+    {"type":"wormhole","from":"J133011","to":"J133525"}, {"type":"wormhole","from":"J133011","to":"J151319"}
   ]
 }
 
@@ -133,8 +133,8 @@ Content-Type: application/json
   "to": ["J105443"],
   "use_wormholes": true,
   "connections": [
-    {"from":"J120455","to":"Lashkai"}, {"from":"J120455","to":"J131142"},
-    {"from":"J131142","to":"J133011"}
+    {"type":"wormhole","from":"J120455","to":"Lashkai"}, {"type":"wormhole","from":"J120455","to":"J131142"},
+    {"type":"wormhole","from":"J131142","to":"J133011"}
   ]
 }
 
@@ -153,11 +153,11 @@ Content-Type: application/json
   "preference": "shortest",
   "use_wormholes": true,
   "connections": [
-    {"from":"J120455","to":"Lashkai"}, {"from":"J120455","to":"Orduin"},
-    {"from":"J120455","to":"DDI-B7"}, {"from":"J120455","to":"J131142"},
-    {"from":"J131142","to":"Amoderia"}, {"from":"J131142","to":"HL-VZX"},
-    {"from":"J131142","to":"J133011"},
-    {"from":"J133011","to":"J133525"}, {"from":"J133011","to":"J151319"}
+    {"type":"wormhole","from":"J120455","to":"Lashkai"}, {"type":"wormhole","from":"J120455","to":"Orduin"},
+    {"type":"wormhole","from":"J120455","to":"DDI-B7"}, {"type":"wormhole","from":"J120455","to":"J131142"},
+    {"type":"wormhole","from":"J131142","to":"Amoderia"}, {"type":"wormhole","from":"J131142","to":"HL-VZX"},
+    {"type":"wormhole","from":"J131142","to":"J133011"},
+    {"type":"wormhole","from":"J133011","to":"J133525"}, {"type":"wormhole","from":"J133011","to":"J151319"}
   ]
 }
 
@@ -179,11 +179,11 @@ Content-Type: application/json
   "preference": "safest",
   "use_wormholes": true,
   "connections": [
-    {"from":"J120455","to":"Lashkai"}, {"from":"J120455","to":"Orduin"},
-    {"from":"J120455","to":"DDI-B7"}, {"from":"J120455","to":"J131142"},
-    {"from":"J131142","to":"Amoderia"}, {"from":"J131142","to":"HL-VZX"},
-    {"from":"J131142","to":"J133011"},
-    {"from":"J133011","to":"J133525"}, {"from":"J133011","to":"J151319"}
+    {"type":"wormhole","from":"J120455","to":"Lashkai"}, {"type":"wormhole","from":"J120455","to":"Orduin"},
+    {"type":"wormhole","from":"J120455","to":"DDI-B7"}, {"type":"wormhole","from":"J120455","to":"J131142"},
+    {"type":"wormhole","from":"J131142","to":"Amoderia"}, {"type":"wormhole","from":"J131142","to":"HL-VZX"},
+    {"type":"wormhole","from":"J131142","to":"J133011"},
+    {"type":"wormhole","from":"J133011","to":"J133525"}, {"type":"wormhole","from":"J133011","to":"J151319"}
   ]
 }
 
@@ -205,11 +205,11 @@ Content-Type: application/json
   "to": ["Adar"],
   "use_wormholes": true,
   "connections": [
-    {"from":"J133011","to":"J133525"}, {"from":"J131142","to":"J133011"},
-    {"from":"J120455","to":"J131142"}, {"from":"J120455","to":"Lashkai"},
-    {"from":"J172840","to":"J213956"}, {"from":"J213956","to":"J161411"},
-    {"from":"J161411","to":"J122832"}, {"from":"J122832","to":"Adar"},
-    {"from":"J161411","to":"J131204"}, {"from":"J131204","to":"Martha"}
+    {"type":"wormhole","from":"J133011","to":"J133525"}, {"type":"wormhole","from":"J131142","to":"J133011"},
+    {"type":"wormhole","from":"J120455","to":"J131142"}, {"type":"wormhole","from":"J120455","to":"Lashkai"},
+    {"type":"wormhole","from":"J172840","to":"J213956"}, {"type":"wormhole","from":"J213956","to":"J161411"},
+    {"type":"wormhole","from":"J161411","to":"J122832"}, {"type":"wormhole","from":"J122832","to":"Adar"},
+    {"type":"wormhole","from":"J161411","to":"J131204"}, {"type":"wormhole","from":"J131204","to":"Martha"}
   ]
 }
 
@@ -228,8 +228,8 @@ Content-Type: application/json
   "to": ["Amarr"],
   "use_wormholes": true,
   "connections": [
-    {"from":"J172840","to":"J213956"}, {"from":"J213956","to":"J161411"},
-    {"from":"J161411","to":"J122832"}, {"from":"J122832","to":"Adar"}
+    {"type":"wormhole","from":"J172840","to":"J213956"}, {"type":"wormhole","from":"J213956","to":"J161411"},
+    {"type":"wormhole","from":"J161411","to":"J122832"}, {"type":"wormhole","from":"J122832","to":"Adar"}
   ]
 }
 
@@ -253,14 +253,14 @@ Content-Type: application/json
   "preference": "shortest",
   "use_wormholes": true,
   "connections": [
-    {"from":"J120455","to":"Lashkai"}, {"from":"J120455","to":"Orduin"},
-    {"from":"J120455","to":"DDI-B7"}, {"from":"J120455","to":"J131142"},
-    {"from":"J131142","to":"Amoderia"}, {"from":"J131142","to":"HL-VZX"},
-    {"from":"J131142","to":"J133011"},
-    {"from":"J133011","to":"J133525"}, {"from":"J133011","to":"J151319"},
-    {"from":"J172840","to":"J213956"}, {"from":"J172840","to":"O-TVTD"},
-    {"from":"J213956","to":"J113453"}, {"from":"J213956","to":"J161411"},
-    {"from":"J161411","to":"J131204"}, {"from":"J131204","to":"Martha"}
+    {"type":"wormhole","from":"J120455","to":"Lashkai"}, {"type":"wormhole","from":"J120455","to":"Orduin"},
+    {"type":"wormhole","from":"J120455","to":"DDI-B7"}, {"type":"wormhole","from":"J120455","to":"J131142"},
+    {"type":"wormhole","from":"J131142","to":"Amoderia"}, {"type":"wormhole","from":"J131142","to":"HL-VZX"},
+    {"type":"wormhole","from":"J131142","to":"J133011"},
+    {"type":"wormhole","from":"J133011","to":"J133525"}, {"type":"wormhole","from":"J133011","to":"J151319"},
+    {"type":"wormhole","from":"J172840","to":"J213956"}, {"type":"wormhole","from":"J172840","to":"O-TVTD"},
+    {"type":"wormhole","from":"J213956","to":"J113453"}, {"type":"wormhole","from":"J213956","to":"J161411"},
+    {"type":"wormhole","from":"J161411","to":"J131204"}, {"type":"wormhole","from":"J131204","to":"Martha"}
   ]
 }
 

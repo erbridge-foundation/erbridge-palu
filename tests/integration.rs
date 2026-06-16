@@ -123,7 +123,7 @@ async fn wormhole_shortcut_makes_jita_to_amarr_four_jumps() {
             "to": "Amarr",
             "preference": "shortest",
             "use_wormholes": true,
-            "connections": [ { "from": "Jita", "to": "Akhragan" } ]
+            "connections": [ { "type": "wormhole", "from": "Jita", "to": "Akhragan" } ]
         }),
     )
     .await;
@@ -134,6 +134,107 @@ async fn wormhole_shortcut_makes_jita_to_amarr_four_jumps() {
     assert_eq!(path[1]["system"], "Akhragan");
     assert_eq!(path[1]["via"], "wormhole");
     assert_eq!(path.last().unwrap()["system"], "Amarr");
+}
+
+#[tokio::test]
+async fn bridge_shortcut_is_labelled_bridge() {
+    // The same Jita↔Akhragan shortcut, but typed `bridge` and gated by
+    // use_bridges: it collapses the trip to 4 jumps and the hop is `bridge`.
+    let (status, body) = post_route(
+        fixture_state(),
+        serde_json::json!({
+            "from": "Jita",
+            "to": "Amarr",
+            "preference": "shortest",
+            "use_bridges": true,
+            "connections": [ { "type": "bridge", "from": "Jita", "to": "Akhragan" } ]
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "body={body}");
+    assert_eq!(body["jumps"], 4);
+    let path = body["path"].as_array().unwrap();
+    assert_eq!(path[1]["system"], "Akhragan");
+    assert_eq!(path[1]["via"], "bridge");
+}
+
+#[tokio::test]
+async fn bridge_used_while_wormholes_excluded() {
+    // Independent flags: with use_wormholes off but use_bridges on, the
+    // wormhole entry is ignored and the bridge routes. Both target Akhragan;
+    // only the bridge-typed one takes effect, so the hop is `bridge`.
+    let (status, body) = post_route(
+        fixture_state(),
+        serde_json::json!({
+            "from": "Jita",
+            "to": "Amarr",
+            "preference": "shortest",
+            "use_wormholes": false,
+            "use_bridges": true,
+            "connections": [
+                { "type": "wormhole", "from": "Jita", "to": "Perimeter" },
+                { "type": "bridge", "from": "Jita", "to": "Akhragan" }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "body={body}");
+    assert_eq!(body["jumps"], 4, "routes over the bridge, not the wormhole");
+    assert_eq!(body["path"][1]["system"], "Akhragan");
+    assert_eq!(body["path"][1]["via"], "bridge");
+}
+
+#[tokio::test]
+async fn connection_validated_when_flag_off() {
+    // The list is always validated: an unknown connection system is a
+    // request-level 400 even though use_wormholes is off and the entry would
+    // never be used. (Previously this was silently ignored.)
+    let (status, body) = post_route(
+        fixture_state(),
+        serde_json::json!({
+            "from": "Jita",
+            "to": "Amarr",
+            "use_wormholes": false,
+            "connections": [ { "type": "wormhole", "from": "Jita", "to": "Nowhere" } ]
+        }),
+    )
+    .await;
+    assert_eq!(
+        status, 400,
+        "unknown connection system is a 400, body={body}"
+    );
+    assert_eq!(body["error"], "unknown_system");
+}
+
+#[tokio::test]
+async fn unknown_connection_type_is_rejected() {
+    // A missing/unrecognised `type` discriminator fails at the JSON extractor
+    // (axum returns 422 for a body that does not deserialize), distinct from a
+    // present-but-invalid value which is our own 400. Either way the request is
+    // rejected and never silently treated as a wormhole.
+    let (unknown, _) = post_fanout(
+        fixture_state(),
+        serde_json::json!({
+            "from": "Jita",
+            "to": ["Amarr"],
+            "use_wormholes": true,
+            "connections": [ { "type": "titan", "from": "Jita", "to": "Akhragan" } ]
+        }),
+    )
+    .await;
+    assert_eq!(unknown, 422, "unrecognised connection type rejected");
+
+    let (missing, _) = post_fanout(
+        fixture_state(),
+        serde_json::json!({
+            "from": "Jita",
+            "to": ["Amarr"],
+            "use_wormholes": true,
+            "connections": [ { "from": "Jita", "to": "Akhragan" } ]
+        }),
+    )
+    .await;
+    assert_eq!(missing, 422, "missing connection type rejected");
 }
 
 #[tokio::test]
@@ -148,7 +249,7 @@ async fn prefer_gates_keeps_gates_over_marginal_wormhole() {
             "to": "Perimeter",
             "preference": "prefer_gates",
             "use_wormholes": true,
-            "connections": [ { "from": "Jita", "to": "Perimeter" } ]
+            "connections": [ { "type": "wormhole", "from": "Jita", "to": "Perimeter" } ]
         }),
     )
     .await;
@@ -168,7 +269,7 @@ async fn prefer_gates_takes_wormhole_that_saves_enough() {
             "to": "Amarr",
             "preference": "prefer_gates",
             "use_wormholes": true,
-            "connections": [ { "from": "Jita", "to": "Akhragan" } ]
+            "connections": [ { "type": "wormhole", "from": "Jita", "to": "Akhragan" } ]
         }),
     )
     .await;

@@ -1,19 +1,19 @@
 //! Gate-routing service: resolve endpoints, assemble the per-request overlay
-//! (avoid set + wormhole edges), run Dijkstra, and shape the result. No HTTP
-//! types here — the handler maps `AppError` and the result DTO.
+//! (avoid set + typed connection edges), run Dijkstra, and shape the result. No
+//! HTTP types here — the handler maps `AppError` and the result DTO.
 
 use chrono::Utc;
 use petgraph::graph::NodeIndex;
 use rustc_hash::FxHashSet;
 
 use crate::dto::{
-    GateRouteOutcome, GateRouteRequest, GateRouteResponse, GateRouteResult, MAX_DESTINATIONS,
-    RouteStep, SystemRef,
+    ConnectionKind, GateRouteOutcome, GateRouteRequest, GateRouteResponse, GateRouteResult,
+    MAX_DESTINATIONS, RouteStep, SystemRef,
 };
 use crate::error::AppError;
 use crate::eve_scout::{self, EveScoutSnapshot};
 use crate::model::GraphData;
-use crate::routing::{Path, Preference, RouteContext, shortest_path, with_scratch};
+use crate::routing::{EdgeKind, Path, Preference, RouteContext, shortest_path, with_scratch};
 
 /// Zarzakh's gate-lock mechanic strands transiting ships, so it is excluded
 /// from transit by default (added to the avoid set unless opted in).
@@ -26,7 +26,8 @@ pub struct OverlayInputs<'a> {
     pub avoid: &'a [SystemRef],
     pub include_zarzakh: bool,
     pub use_wormholes: bool,
-    pub connections: &'a [crate::dto::WhConnection],
+    pub use_bridges: bool,
+    pub connections: &'a [crate::dto::Connection],
     pub include_thera: bool,
     pub include_turnur: bool,
 }
@@ -37,6 +38,7 @@ impl<'a> From<&'a GateRouteRequest> for OverlayInputs<'a> {
             avoid: &r.avoid,
             include_zarzakh: r.include_zarzakh,
             use_wormholes: r.use_wormholes,
+            use_bridges: r.use_bridges,
             connections: &r.connections,
             include_thera: r.include_thera,
             include_turnur: r.include_turnur,
@@ -85,11 +87,13 @@ pub fn compute_gate_route(
     let mut shared_avoid = assemble_avoid_set(graph, &inputs)?;
     shared_avoid.remove(&from);
 
-    // The user wormhole connections are part of the *shared* header, so an
-    // unknown connection system is a request-level error — resolved (and
-    // validated) once here, not folded into a per-destination slot. EVE-Scout
-    // sigs are added per destination (their inclusion depends on the endpoint
-    // set) and silently skip unknowns, so they never fail the request.
+    // The user connections are part of the *shared* header, so every entry is
+    // resolved (and validated) once here — an unknown connection system is a
+    // request-level error, regardless of the use-flags, not folded into a
+    // per-destination slot. The use-flags decide what is *added* to the overlay
+    // later (per destination), not what is *accepted*. EVE-Scout sigs are added
+    // per destination (their inclusion depends on the endpoint set) and silently
+    // skip unknowns, so they never fail the request.
     let connections = resolve_connections(graph, &inputs)?;
 
     // ── per-destination tier ──────────────────────────────────────────────────
@@ -129,25 +133,53 @@ pub fn compute_gate_route(
     })
 }
 
-/// Resolve the shared user wormhole connections to node-index pairs once, so an
-/// unknown connection system surfaces as a request-level error rather than being
-/// charged to one destination. Empty when `use_wormholes` is off.
+/// Resolve **every** shared user connection to a node-index pair once, tagged
+/// with its overlay edge kind — independent of the use-flags. The list is part
+/// of the shared header, so an unknown connection system surfaces as a
+/// request-level error rather than being charged to one destination, and the
+/// validation happens whether or not the matching use-flag is set. Whether a
+/// resolved entry is actually added to the overlay is decided later, by
+/// [`add_overlay_connections`], per its `type` flag.
 fn resolve_connections(
     graph: &GraphData,
     inputs: &OverlayInputs<'_>,
-) -> Result<Vec<(NodeIndex, NodeIndex)>, AppError> {
-    if !inputs.use_wormholes {
-        return Ok(Vec::new());
-    }
+) -> Result<Vec<(NodeIndex, NodeIndex, EdgeKind)>, AppError> {
     inputs
         .connections
         .iter()
         .map(|c| {
             let a = resolve_system(graph, &c.from)?;
             let b = resolve_system(graph, &c.to)?;
-            Ok((a, b))
+            Ok((a, b, edge_kind(c.kind)))
         })
         .collect()
+}
+
+/// Map a DTO `ConnectionKind` to the routing-core `EdgeKind`.
+fn edge_kind(kind: ConnectionKind) -> EdgeKind {
+    match kind {
+        ConnectionKind::Bridge => EdgeKind::Bridge,
+        ConnectionKind::Wormhole => EdgeKind::Wormhole,
+    }
+}
+
+/// Add the pre-resolved user connections to `ctx`, gated per type: a wormhole
+/// edge only when `use_wormholes`, a bridge edge only when `use_bridges`.
+/// Self-loop/duplicate suppression lives in `RouteContext::add_connection`.
+fn add_overlay_connections(
+    inputs: &OverlayInputs<'_>,
+    connections: &[(NodeIndex, NodeIndex, EdgeKind)],
+    ctx: &mut RouteContext<'_>,
+) {
+    for &(a, b, kind) in connections {
+        let used = match kind {
+            EdgeKind::Wormhole => inputs.use_wormholes,
+            EdgeKind::Bridge => inputs.use_bridges,
+        };
+        if used {
+            ctx.add_connection(a, b, kind);
+        }
+    }
 }
 
 /// Route the shared `from` to one destination `to_ref` against the prepared
@@ -161,7 +193,7 @@ fn compute_one(
     inputs: &OverlayInputs<'_>,
     preference: Preference,
     shared_avoid: &FxHashSet<NodeIndex>,
-    connections: &[(NodeIndex, NodeIndex)],
+    connections: &[(NodeIndex, NodeIndex, EdgeKind)],
     from: NodeIndex,
     to_ref: &SystemRef,
 ) -> Result<GateRouteOutcome, AppError> {
@@ -172,10 +204,9 @@ fn compute_one(
     avoid.remove(&to);
     let mut ctx = RouteContext::new(graph, avoid, preference);
 
-    // Pre-resolved shared connections, then the endpoint-dependent scout edges.
-    for &(a, b) in connections {
-        ctx.add_connection(a, b);
-    }
+    // Pre-resolved shared connections (gated per type), then the
+    // endpoint-dependent scout edges.
+    add_overlay_connections(inputs, connections, &mut ctx);
     apply_scout_overlay(graph, scout, inputs, &[from, to], &mut ctx);
 
     let path = with_scratch(|scratch| shortest_path(&ctx, from, to, scratch))
@@ -224,13 +255,10 @@ pub fn apply_overlay(
     endpoints: &[NodeIndex],
     ctx: &mut RouteContext<'_>,
 ) -> Result<(), AppError> {
-    if inputs.use_wormholes {
-        for c in inputs.connections {
-            let a = resolve_system(graph, &c.from)?;
-            let b = resolve_system(graph, &c.to)?;
-            ctx.add_connection(a, b);
-        }
-    }
+    // Validate every connection (unknown system → request-level error) regardless
+    // of the use-flags, then add only the entries their `type` flag enables.
+    let connections = resolve_connections(graph, inputs)?;
+    add_overlay_connections(inputs, &connections, ctx);
     apply_scout_overlay(graph, scout, inputs, endpoints, ctx);
     Ok(())
 }
@@ -283,7 +311,9 @@ fn add_scout_edges(
         ) else {
             continue;
         };
-        ctx.add_connection(out, in_);
+        // EVE-Scout signatures are wormholes — labelled `wormhole`, never gated
+        // by `use_wormholes` (their own `include_*` flags govern them).
+        ctx.add_connection(out, in_, EdgeKind::Wormhole);
     }
 }
 
@@ -304,7 +334,8 @@ pub fn resolve_system(graph: &GraphData, r: &SystemRef) -> Result<NodeIndex, App
 }
 
 /// Turn a node path into labelled `RouteStep`s (`start` / `stargate` /
-/// `wormhole`). Shared so the blops gate leg labels steps identically.
+/// `wormhole` / `bridge`). Shared so the blops gate leg labels steps
+/// identically.
 pub fn build_steps(graph: &GraphData, ctx: &RouteContext<'_>, path: &Path) -> Vec<RouteStep> {
     path.iter()
         .enumerate()
@@ -329,7 +360,7 @@ pub fn build_steps(graph: &GraphData, ctx: &RouteContext<'_>, path: &Path) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dto::{RoutePreference, WhConnection};
+    use crate::dto::{Connection, ConnectionKind, RoutePreference};
     use crate::eve_scout::Signature;
     use crate::graph::build_graph_data;
     use crate::model::{RawSdeData, SecClass, System};
@@ -374,10 +405,21 @@ mod tests {
             preference: RoutePreference::Shortest,
             avoid: vec![],
             use_wormholes: false,
+            use_bridges: false,
             connections: vec![],
             include_thera: false,
             include_turnur: false,
             include_zarzakh: false,
+        }
+    }
+
+    /// A typed connection for tests.
+    fn conn(kind: ConnectionKind, from: &str, to: &str) -> Connection {
+        Connection {
+            kind,
+            from: SystemRef::Name(from.into()),
+            to: SystemRef::Name(to.into()),
+            max_size: None,
         }
     }
 
@@ -537,10 +579,9 @@ mod tests {
         let scout = EveScoutSnapshot::default();
         let mut r = req("Jita", "G");
         r.use_wormholes = true;
-        r.connections = vec![WhConnection {
-            from: SystemRef::Name("Jita".into()),
-            to: SystemRef::Name("G".into()),
+        r.connections = vec![Connection {
             max_size: Some("large".into()),
+            ..conn(ConnectionKind::Wormhole, "Jita", "G")
         }];
         let resp = compute_gate_route(&gd, &scout, &r).unwrap();
         let (jumps, path) = one_route(&resp);
@@ -549,17 +590,59 @@ mod tests {
     }
 
     #[test]
-    fn connections_ignored_when_use_wormholes_false() {
+    fn bridge_connection_creates_shortcut_labelled_bridge() {
+        // A bridge with use_bridges routes and labels the hop `bridge`.
+        let gd = zarzakh_graph();
+        let scout = EveScoutSnapshot::default();
+        let mut r = req("Jita", "G");
+        r.use_bridges = true;
+        r.connections = vec![conn(ConnectionKind::Bridge, "Jita", "G")];
+        let resp = compute_gate_route(&gd, &scout, &r).unwrap();
+        let (jumps, path) = one_route(&resp);
+        assert_eq!(jumps, 1);
+        assert_eq!(path[1].via, "bridge");
+    }
+
+    #[test]
+    fn bridge_used_while_wormholes_excluded() {
+        // Independent flags: use_wormholes off, use_bridges on. A wormhole and a
+        // bridge are both supplied; only the bridge is added. Routing Jita→G
+        // succeeds over the bridge (the wormhole Jita→H is not used).
         let gd = zarzakh_graph();
         let scout = EveScoutSnapshot::default();
         let mut r = req("Jita", "G");
         r.use_wormholes = false;
-        r.connections = vec![WhConnection {
-            from: SystemRef::Name("Jita".into()),
-            to: SystemRef::Name("G".into()),
-            max_size: None,
-        }];
+        r.use_bridges = true;
+        r.connections = vec![
+            conn(ConnectionKind::Wormhole, "Jita", "H"),
+            conn(ConnectionKind::Bridge, "Jita", "G"),
+        ];
+        let resp = compute_gate_route(&gd, &scout, &r).unwrap();
+        let (jumps, path) = one_route(&resp);
+        assert_eq!(jumps, 1);
+        assert_eq!(path[1].via, "bridge");
+        assert_eq!(path[1].system, "G");
+    }
+
+    #[test]
+    fn wormhole_connection_excluded_when_use_wormholes_false() {
+        let gd = zarzakh_graph();
+        let scout = EveScoutSnapshot::default();
+        let mut r = req("Jita", "G");
+        r.use_wormholes = false;
+        r.connections = vec![conn(ConnectionKind::Wormhole, "Jita", "G")];
         // Without use_wormholes the edge is not added → still unreachable (in slot).
+        let resp = compute_gate_route(&gd, &scout, &r).unwrap();
+        assert_eq!(one_failure(&resp), "unreachable");
+    }
+
+    #[test]
+    fn bridge_connection_excluded_when_use_bridges_false() {
+        let gd = zarzakh_graph();
+        let scout = EveScoutSnapshot::default();
+        let mut r = req("Jita", "G");
+        r.use_bridges = false;
+        r.connections = vec![conn(ConnectionKind::Bridge, "Jita", "G")];
         let resp = compute_gate_route(&gd, &scout, &r).unwrap();
         assert_eq!(one_failure(&resp), "unreachable");
     }
@@ -570,14 +653,27 @@ mod tests {
         let scout = EveScoutSnapshot::default();
         let mut r = req("Jita", "G");
         r.use_wormholes = true;
-        r.connections = vec![WhConnection {
-            from: SystemRef::Name("Jita".into()),
-            to: SystemRef::Name("Nowhere".into()),
-            max_size: None,
-        }];
+        r.connections = vec![conn(ConnectionKind::Wormhole, "Jita", "Nowhere")];
         assert!(matches!(
             compute_gate_route(&gd, &scout, &r).unwrap_err(),
             AppError::UnknownSystem(_)
+        ));
+    }
+
+    #[test]
+    fn connection_validated_even_when_flag_off() {
+        // The list is always validated: an unknown connection system is a
+        // request-level error even when the matching use-flag is unset (the
+        // current latent-bug fix — a typo is no longer silently ignored).
+        let gd = zarzakh_graph();
+        let scout = EveScoutSnapshot::default();
+        let mut r = req("Jita", "G");
+        r.use_wormholes = false; // flag OFF
+        r.use_bridges = false;
+        r.connections = vec![conn(ConnectionKind::Wormhole, "Jita", "Nowhere")];
+        assert!(matches!(
+            compute_gate_route(&gd, &scout, &r).unwrap_err(),
+            AppError::UnknownSystem(s) if s == "Nowhere"
         ));
     }
 
@@ -617,6 +713,41 @@ mod tests {
         let resp = compute_gate_route(&gd, &scout, &r).unwrap();
         let (_, path) = one_route(&resp);
         // Thera→G via wormhole, then G→Zarzakh→H via gates.
+        assert_eq!(path[1].via, "wormhole");
+        assert_eq!(path[1].system, "G");
+    }
+
+    #[test]
+    fn eve_scout_independent_of_use_wormholes() {
+        // include_thera with use_wormholes explicitly false: the Thera sig is
+        // still added (EVE-Scout has its own flag; use_wormholes gates only the
+        // user connections[]). A user wormhole connection is supplied but, with
+        // use_wormholes off, ignored — proving the two scopes are independent.
+        let raw = RawSdeData {
+            systems: vec![
+                sys(31000005, "Thera", SecClass::Wormhole),
+                sys(1, "G", SecClass::Nullsec),
+                sys(ZARZAKH_SYSTEM_ID, "Zarzakh", SecClass::Nullsec),
+                sys(2, "H", SecClass::Nullsec),
+            ],
+            gate_pairs: vec![(1, ZARZAKH_SYSTEM_ID), (ZARZAKH_SYSTEM_ID, 2)],
+            hulls: Default::default(),
+        };
+        let gd = build_graph_data(raw, 1);
+        let scout = EveScoutSnapshot {
+            thera: vec![live_sig(31000005, 1)],
+            turnur: vec![],
+            fetched_at: Some(Utc::now()),
+        };
+        let mut r = req("Thera", "H");
+        r.include_thera = true;
+        r.use_wormholes = false; // user connections off …
+        r.connections = vec![conn(ConnectionKind::Wormhole, "Thera", "H")]; // … so this is ignored
+        r.include_zarzakh = true;
+        let resp = compute_gate_route(&gd, &scout, &r).unwrap();
+        let (_, path) = one_route(&resp);
+        // The route uses the EVE-Scout Thera→G sig (wormhole), then gates — not
+        // the ignored user Thera→H connection (which would have been 1 jump).
         assert_eq!(path[1].via, "wormhole");
         assert_eq!(path[1].system, "G");
     }
@@ -827,11 +958,7 @@ mod tests {
         let scout = EveScoutSnapshot::default();
         let mut r = fanout("Jita", &["G", "Zarzakh"]);
         r.use_wormholes = true;
-        r.connections = vec![WhConnection {
-            from: SystemRef::Name("Jita".into()),
-            to: SystemRef::Name("Nowhere".into()),
-            max_size: None,
-        }];
+        r.connections = vec![conn(ConnectionKind::Wormhole, "Jita", "Nowhere")];
         let err = compute_gate_route(&gd, &scout, &r).unwrap_err();
         assert!(matches!(err, AppError::UnknownSystem(s) if s == "Nowhere"));
     }

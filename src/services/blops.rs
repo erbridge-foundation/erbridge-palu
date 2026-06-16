@@ -186,7 +186,7 @@ fn round2(ly: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dto::WhConnection;
+    use crate::dto::{Connection, ConnectionKind};
     use crate::graph::build_graph_data;
     use crate::model::{RawSdeData, SecClass, System};
     use crate::range::{LY_IN_METERS, effective_ly};
@@ -215,6 +215,7 @@ mod tests {
             avoid: &[],
             include_zarzakh: false,
             use_wormholes: false,
+            use_bridges: false,
             connections: &[],
             include_thera: false,
             include_turnur: false,
@@ -558,7 +559,8 @@ mod tests {
         };
         let gd = build_graph_data(raw, 0);
         let scout = EveScoutSnapshot::default();
-        let conns = [WhConnection {
+        let conns = [Connection {
+            kind: ConnectionKind::Wormhole,
             from: SystemRef::Name("A".into()),
             to: SystemRef::Name("S".into()),
             max_size: None,
@@ -580,6 +582,45 @@ mod tests {
         assert_eq!(resp.chosen.gate_jumps, 1);
         // The hop into S is a wormhole, not a gate.
         assert_eq!(resp.chosen.gate_path[1].via, "wormhole");
+    }
+
+    #[test]
+    fn bridge_overlay_applies_to_gate_leg() {
+        // Same isolated-A scenario, but the shortcut is a bridge gated by
+        // use_bridges; the hop into S is labelled `bridge`.
+        let raw = RawSdeData {
+            systems: vec![
+                sys_at(1, "A", SecClass::Highsec, 10.0),
+                sys_at(2, "S", SecClass::Nullsec, 1.0),
+                sys_at(4, "B", SecClass::Nullsec, 0.0),
+            ],
+            gate_pairs: vec![(2, 4)], // A isolated by gates
+            hulls: Default::default(),
+        };
+        let gd = build_graph_data(raw, 0);
+        let scout = EveScoutSnapshot::default();
+        let conns = [Connection {
+            kind: ConnectionKind::Bridge,
+            from: SystemRef::Name("A".into()),
+            to: SystemRef::Name("S".into()),
+            max_size: None,
+        }];
+        let (from, to) = (SystemRef::Name("A".into()), SystemRef::Name("B".into()));
+        let mut q = query(&from, &to, 3.0);
+        q.overlay.use_bridges = true;
+        q.overlay.connections = &conns;
+        let resp = compute_staging(
+            &gd,
+            &scout,
+            &q,
+            dest_not_highsec,
+            stage_any_kspace,
+            reject_highsec,
+        )
+        .unwrap();
+        assert_eq!(resp.chosen.bridge.from.system, "S");
+        assert_eq!(resp.chosen.gate_jumps, 1);
+        assert_eq!(resp.chosen.gate_path[1].via, "bridge");
     }
 
     #[test]

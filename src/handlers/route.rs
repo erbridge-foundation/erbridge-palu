@@ -86,6 +86,7 @@ pub async fn route_blops(
             avoid: &req.avoid,
             include_zarzakh: req.include_zarzakh,
             use_wormholes: req.use_wormholes,
+            use_bridges: req.use_bridges,
             connections: &req.connections,
             include_thera: req.include_thera,
             include_turnur: req.include_turnur,
