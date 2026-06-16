@@ -29,7 +29,7 @@
 ## 5. Docs + spec rename
 
 - [x] 5.1 Update `README.md`: the `/route/system` and `/route/blops` request-field tables (`type` on connections, new `use_bridges`, "always validated" note), the "Wormhole overlays" → "Connection overlays" section (covers bridge + wormhole; clarifies EVE-Scout independence), and the `via` value list to include `bridge`.
-- [ ] 5.2 At archive time, rename `openspec/specs/wormhole-overlay/` → `openspec/specs/connection-overlay/` (the change's spec delta is authored under the new name; the old name is retired via the REMOVED delta). — handled by `/opsx:archive`.
+- [x] 5.2 At archive time, rename `openspec/specs/wormhole-overlay/` → `openspec/specs/connection-overlay/` (the change's spec delta is authored under the new name; the old name is retired via the REMOVED delta). Done via spec sync at archive.
 
 ## 6. Verify
 
